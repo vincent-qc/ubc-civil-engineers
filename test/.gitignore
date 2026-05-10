@@ -1,0 +1,7 @@
+node_modules/
+.next/
+bin/desktop-driver
+.swift-module-cache/
+*.log
+.DS_Store
+.env

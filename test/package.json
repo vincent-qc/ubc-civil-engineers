@@ -1,0 +1,21 @@
+{
+  "name": "clod-computer-use-electron-react",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A barebones Electron React computer-use loop backed by CLOD's OpenAI-compatible chat completions API.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build:driver": "node scripts/build-driver.js",
+    "dev": "npm run build:driver && node scripts/start-vite-electron.js",
+    "build": "npm run build:driver && vite build",
+    "start": "npm run build && electron .",
+    "check": "node --check scripts/build-driver.js && node --check scripts/start-vite-electron.js && node --check electron/main.cjs && node --check electron/preload.cjs && npm run build"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "electron": "^42.0.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "vite": "^7.2.7"
+  }
+}
