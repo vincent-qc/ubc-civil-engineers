@@ -37,8 +37,8 @@ chmod +x start.sh
 
 Open:
 
-- Frontend: `http://localhost:3000`
-- Backend docs: `http://localhost:8000/docs`
+- Frontend: `http://localhost:3001`
+- Backend docs: `http://localhost:8001/docs`
 
 Manual startup:
 
