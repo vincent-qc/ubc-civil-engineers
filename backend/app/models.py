@@ -39,6 +39,8 @@ ActionType = Literal[
 ]
 TrainingStatus = Literal["queued", "running", "completed", "failed"]
 ModelStatus = Literal["untrained", "training", "ready", "failed"]
+SkillStatus = Literal["draft", "collecting", "training", "ready", "failed"]
+SkillSessionStatus = Literal["chatting", "ready_for_tasks", "completed"]
 
 
 class BoundingBox(BaseModel):
@@ -89,6 +91,11 @@ class CreateUserRequest(BaseModel):
     preferences: dict[str, Any] = Field(default_factory=dict)
 
 
+class LoginRequest(BaseModel):
+    display_name: str
+    email_hint: str | None = None
+
+
 class UserProfile(BaseModel):
     id: str = Field(default_factory=lambda: new_id("user"))
     display_name: str
@@ -105,17 +112,65 @@ class OnboardingTaskRequest(BaseModel):
     user_id: str
     preferred_sites: list[str] = Field(default_factory=list)
     count: int = Field(default=6, ge=1, le=12)
+    skill_id: str | None = None
+    goal: str | None = None
 
 
 class OnboardingTask(BaseModel):
     id: str = Field(default_factory=lambda: new_id("task"))
     user_id: str
+    skill_id: str | None = None
     title: str
     prompt: str
     success_hint: str
     risk_level: Literal["low", "medium", "high"] = "low"
     tags: list[str] = Field(default_factory=list)
+    order: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)
+
+
+class SkillChatMessage(BaseModel):
+    role: Actor
+    content: str
+    created_at: str = Field(default_factory=utc_now)
+
+
+class CreateSkillSessionRequest(BaseModel):
+    user_id: str
+
+
+class SkillChatTurnRequest(BaseModel):
+    content: str
+
+
+class SkillChatSession(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("skillchat"))
+    user_id: str
+    status: SkillSessionStatus = "chatting"
+    messages: list[SkillChatMessage] = Field(default_factory=list)
+    inferred_goal: str = ""
+    inferred_sites: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+
+
+class UserSkill(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("skill"))
+    user_id: str
+    session_id: str
+    name: str
+    goal: str
+    description: str
+    preferred_sites: list[str] = Field(default_factory=list)
+    status: SkillStatus = "draft"
+    task_count: int = 0
+    trajectory_count: int = 0
+    training_job_id: str | None = None
+    model_checkpoint_uri: str | None = None
+    model_artifact_id: str | None = None
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
 
 
 class CreateTrajectoryRequest(BaseModel):
@@ -123,6 +178,7 @@ class CreateTrajectoryRequest(BaseModel):
     task: str
     source: TrajectorySource = "manual"
     task_id: str | None = None
+    skill_id: str | None = None
     initial_observation: BrowserObservation | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -130,6 +186,7 @@ class CreateTrajectoryRequest(BaseModel):
 class Trajectory(BaseModel):
     id: str = Field(default_factory=lambda: new_id("traj"))
     user_id: str
+    skill_id: str | None = None
     task_id: str | None = None
     task: str
     source: TrajectorySource = "manual"
@@ -175,6 +232,7 @@ class BulkRecordingRequest(BaseModel):
     task: str
     source: TrajectorySource = "manual"
     task_id: str | None = None
+    skill_id: str | None = None
     initial_observation: BrowserObservation | None = None
     events: list[TrajectoryEventRequest]
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -182,6 +240,7 @@ class BulkRecordingRequest(BaseModel):
 
 class CreateTrainingJobRequest(BaseModel):
     user_id: str
+    skill_id: str | None = None
     epochs: int = Field(default=40, ge=1, le=500)
     batch_size: int = Field(default=16, ge=1, le=128)
 
@@ -189,9 +248,11 @@ class CreateTrainingJobRequest(BaseModel):
 class TrainingJob(BaseModel):
     id: str = Field(default_factory=lambda: new_id("train"))
     user_id: str
+    skill_id: str | None = None
     status: TrainingStatus = "queued"
     epochs: int = 40
     batch_size: int = 16
+    progress: float = Field(default=0.0, ge=0, le=1)
     example_count: int = 0
     artifact_uri: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -203,6 +264,7 @@ class TrainingJob(BaseModel):
 class ModelArtifact(BaseModel):
     id: str = Field(default_factory=lambda: new_id("model"))
     user_id: str
+    skill_id: str | None = None
     training_job_id: str
     uri: str
     label_set: list[str] = Field(default_factory=list)
@@ -213,6 +275,7 @@ class ModelArtifact(BaseModel):
 
 class PredictActionRequest(BaseModel):
     user_id: str
+    skill_id: str | None = None
     task: str
     observation: BrowserObservation
     previous_actions: list[BrowserAction] = Field(default_factory=list)

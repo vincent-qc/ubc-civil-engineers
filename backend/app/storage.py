@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 COLLECTIONS = [
     "users",
+    "user_skills",
+    "skill_sessions",
     "onboarding_tasks",
     "trajectories",
     "trajectory_events",
@@ -72,14 +74,21 @@ class MongoStore:
             await self.db[name].create_index("id", unique=True)
             await self.db[name].create_index("created_at")
         await self.db.users.create_index("model_status")
+        await self.db.user_skills.create_index("user_id")
+        await self.db.user_skills.create_index("status")
+        await self.db.skill_sessions.create_index("user_id")
         await self.db.onboarding_tasks.create_index("user_id")
+        await self.db.onboarding_tasks.create_index("skill_id")
         await self.db.trajectories.create_index("user_id")
+        await self.db.trajectories.create_index("skill_id")
         await self.db.trajectories.create_index("task_id")
         await self.db.trajectory_events.create_index("trajectory_id")
         await self.db.trajectory_events.create_index("user_id")
         await self.db.training_jobs.create_index("user_id")
+        await self.db.training_jobs.create_index("skill_id")
         await self.db.training_jobs.create_index("status")
         await self.db.model_artifacts.create_index("user_id")
+        await self.db.model_artifacts.create_index("skill_id")
 
     async def close(self) -> None:
         self.client.close()

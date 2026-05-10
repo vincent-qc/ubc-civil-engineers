@@ -17,15 +17,21 @@ from app.models import (
     CreateTrainingJobRequest,
     CreateTrajectoryRequest,
     CreateUserRequest,
+    LoginRequest,
     ModelArtifact,
     OnboardingTask,
     OnboardingTaskRequest,
     PredictActionRequest,
     PredictActionResponse,
+    SkillChatMessage,
+    SkillChatSession,
+    SkillChatTurnRequest,
+    CreateSkillSessionRequest,
     Trajectory,
     TrajectoryEvent,
     TrajectoryEventRequest,
     TrainingJob,
+    UserSkill,
     UserProfile,
     utc_now,
 )
@@ -82,6 +88,24 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/api/auth/login")
+async def login(request: LoginRequest) -> dict[str, Any]:
+    existing_users = await store.list("users")
+    normalized = request.display_name.strip().lower()
+    for user in existing_users:
+        if user.get("display_name", "").strip().lower() == normalized:
+            return user
+
+    user = UserProfile(
+        display_name=request.display_name.strip() or "Browser User",
+        email_hint=request.email_hint,
+        preferences={"created_from": "login"},
+    )
+    created = await store.insert("users", user.model_dump())
+    await events.publish({"type": "user_logged_in", "user": created})
+    return created
+
+
 @app.post("/api/users")
 async def create_user(request: CreateUserRequest) -> dict[str, Any]:
     user = UserProfile(**request.model_dump())
@@ -103,12 +127,139 @@ async def get_user(user_id: str) -> dict[str, Any]:
     return user
 
 
+@app.post("/api/skills/sessions")
+async def create_skill_session(request: CreateSkillSessionRequest) -> dict[str, Any]:
+    await _require_user(request.user_id)
+    session = SkillChatSession(
+        user_id=request.user_id,
+        messages=[
+            SkillChatMessage(
+                role="agent",
+                content="What browser workflow should this new skill learn? Tell me the outcome, the websites involved, and what should count as done.",
+            )
+        ],
+    )
+    created = await store.insert("skill_sessions", session.model_dump())
+    await events.publish({"type": "skill_session_created", "session": created})
+    return created
+
+
+@app.get("/api/skills/sessions/{session_id}")
+async def get_skill_session(session_id: str) -> dict[str, Any]:
+    session = await store.get("skill_sessions", session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Skill chat session not found")
+    return session
+
+
+@app.post("/api/skills/sessions/{session_id}/messages")
+async def add_skill_session_message(session_id: str, request: SkillChatTurnRequest) -> dict[str, Any]:
+    session = await store.get("skill_sessions", session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Skill chat session not found")
+
+    messages = [SkillChatMessage(**message) for message in session.get("messages", [])]
+    messages.append(SkillChatMessage(role="user", content=request.content))
+    user_turns = [message.content for message in messages if message.role == "user"]
+    inferred = _infer_skill_from_chat(user_turns)
+
+    if len(user_turns) == 1:
+        reply = "Which sites, accounts, or pages should I watch for, and are there any steps that should always ask for confirmation?"
+        status = "chatting"
+    elif len(user_turns) == 2:
+        reply = "What are two or three examples of success and one example of a mistake this skill should avoid?"
+        status = "chatting"
+    else:
+        reply = f"I have enough to build a data-collection plan for {inferred['name']}. Press Next when you are ready to collect demonstrations."
+        status = "ready_for_tasks"
+
+    messages.append(SkillChatMessage(role="agent", content=reply))
+    updated = await store.update(
+        "skill_sessions",
+        session_id,
+        {
+            "messages": [message.model_dump() for message in messages],
+            "status": status,
+            "inferred_goal": inferred["goal"],
+            "inferred_sites": inferred["sites"],
+            "updated_at": utc_now(),
+        },
+    )
+    await events.publish({"type": "skill_session_message", "session": updated})
+    return updated or {}
+
+
+@app.post("/api/skills/sessions/{session_id}/finalize")
+async def finalize_skill_session(session_id: str) -> dict[str, Any]:
+    session = await store.get("skill_sessions", session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Skill chat session not found")
+    if session.get("status") == "completed":
+        existing = await store.list("user_skills", {"session_id": session_id})
+        skill = existing[0] if existing else None
+        tasks = await store.list("onboarding_tasks", {"skill_id": skill["id"]}) if skill else []
+        return {"session": session, "skill": skill, "tasks": tasks}
+
+    user_turns = [message.get("content", "") for message in session.get("messages", []) if message.get("role") == "user"]
+    inferred = _infer_skill_from_chat(user_turns)
+    skill = UserSkill(
+        user_id=session["user_id"],
+        session_id=session_id,
+        name=inferred["name"],
+        goal=inferred["goal"],
+        description=inferred["description"],
+        preferred_sites=inferred["sites"],
+        status="collecting",
+    )
+    stored_skill = await store.insert("user_skills", skill.model_dump())
+    task_templates = _skill_task_templates(inferred["goal"], inferred["sites"])
+    stored_tasks: list[dict[str, Any]] = []
+    for index, task in enumerate(task_templates, start=1):
+        stored_tasks.append(
+            await store.insert(
+                "onboarding_tasks",
+                OnboardingTask(
+                    user_id=session["user_id"],
+                    skill_id=stored_skill["id"],
+                    order=index,
+                    **task,
+                ).model_dump(),
+            )
+        )
+    stored_skill = await store.update(
+        "user_skills",
+        stored_skill["id"],
+        {"task_count": len(stored_tasks), "updated_at": utc_now()},
+    ) or stored_skill
+    updated_session = await store.update("skill_sessions", session_id, {"status": "completed", "updated_at": utc_now()})
+    await events.publish({"type": "skill_finalized", "skill": stored_skill, "tasks": stored_tasks})
+    return {"session": updated_session, "skill": stored_skill, "tasks": stored_tasks}
+
+
+@app.get("/api/users/{user_id}/skills")
+async def list_user_skills(user_id: str) -> list[dict[str, Any]]:
+    await _require_user(user_id)
+    return await store.list("user_skills", {"user_id": user_id})
+
+
+@app.get("/api/skills/{skill_id}")
+async def get_skill(skill_id: str) -> dict[str, Any]:
+    return await _require_skill(skill_id)
+
+
+@app.get("/api/skills/{skill_id}/tasks")
+async def list_skill_tasks(skill_id: str) -> list[dict[str, Any]]:
+    await _require_skill(skill_id)
+    tasks = await store.list("onboarding_tasks", {"skill_id": skill_id})
+    return sorted(tasks, key=lambda task: int(task.get("order", 0)))
+
+
 @app.post("/api/onboarding/tasks")
 async def create_onboarding_tasks(request: OnboardingTaskRequest) -> list[dict[str, Any]]:
     await _require_user(request.user_id)
     tasks = [
-        OnboardingTask(user_id=request.user_id, **task).model_dump()
-        for task in _task_templates(request.preferred_sites)[: request.count]
+        OnboardingTask(user_id=request.user_id, skill_id=request.skill_id, order=index + 1, **task).model_dump()
+        for index, task in enumerate(_task_templates(request.preferred_sites, request.goal)[: request.count])
     ]
     for task in tasks:
         await store.insert("onboarding_tasks", task)
@@ -127,10 +278,11 @@ async def create_trajectory(request: CreateTrajectoryRequest) -> dict[str, Any]:
     await _require_user(request.user_id)
     trajectory = Trajectory(
         user_id=request.user_id,
+        skill_id=request.skill_id,
         task_id=request.task_id,
         task=request.task,
         source=request.source,
-        metadata=request.metadata,
+        metadata={**request.metadata, **({"skill_id": request.skill_id} if request.skill_id else {})},
     )
     created = await store.insert("trajectories", trajectory.model_dump())
     if request.initial_observation:
@@ -186,6 +338,7 @@ async def create_bulk_recording(request: BulkRecordingRequest) -> dict[str, Any]
             task=request.task,
             source=request.source,
             task_id=request.task_id,
+            skill_id=request.skill_id,
             initial_observation=request.initial_observation,
             metadata=request.metadata,
         )
@@ -201,9 +354,17 @@ async def create_bulk_recording(request: BulkRecordingRequest) -> dict[str, Any]
 @app.post("/api/training/jobs")
 async def create_training_job(request: CreateTrainingJobRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     await _require_user(request.user_id)
-    job = TrainingJob(user_id=request.user_id, epochs=request.epochs, batch_size=request.batch_size)
+    if request.skill_id:
+        await _require_skill(request.skill_id)
+    job = TrainingJob(user_id=request.user_id, skill_id=request.skill_id, epochs=request.epochs, batch_size=request.batch_size)
     created = await store.insert("training_jobs", job.model_dump())
     await store.update("users", request.user_id, {"model_status": "training", "updated_at": utc_now()})
+    if request.skill_id:
+        await store.update(
+            "user_skills",
+            request.skill_id,
+            {"status": "training", "training_job_id": created["id"], "updated_at": utc_now()},
+        )
     background_tasks.add_task(_run_training_job, created["id"])
     await events.publish({"type": "training_job_created", "job": created})
     return created
@@ -226,8 +387,9 @@ async def list_user_models(user_id: str) -> list[dict[str, Any]]:
 @app.post("/api/agent/predict")
 async def predict_action(request: PredictActionRequest) -> PredictActionResponse:
     user = await _require_user(request.user_id)
-    checkpoint_uri = user.get("model_checkpoint_uri")
-    artifact_id = user.get("model_artifact_id")
+    skill = await _require_skill(request.skill_id) if request.skill_id else None
+    checkpoint_uri = (skill or {}).get("model_checkpoint_uri") or user.get("model_checkpoint_uri")
+    artifact_id = (skill or {}).get("model_artifact_id") or user.get("model_artifact_id")
 
     if checkpoint_uri:
         try:
@@ -281,20 +443,27 @@ async def _run_training_job(job_id: str) -> None:
     if not job:
         return
     user_id = job["user_id"]
-    await store.update("training_jobs", job_id, {"status": "running", "updated_at": utc_now()})
+    skill_id = job.get("skill_id")
+    await store.update("training_jobs", job_id, {"status": "running", "progress": 0.05, "updated_at": utc_now()})
     await events.publish({"type": "training_job_running", "job_id": job_id, "user_id": user_id})
 
     try:
         trajectories = await store.list("trajectories", {"user_id": user_id})
+        if skill_id:
+            trajectories = [trajectory for trajectory in trajectories if trajectory.get("skill_id") == skill_id]
         trajectory_ids = {trajectory["id"] for trajectory in trajectories}
         all_events: list[dict[str, Any]] = []
         for trajectory_id in trajectory_ids:
             all_events.extend(await store.list("trajectory_events", {"trajectory_id": trajectory_id}))
 
         progress_events: list[dict[str, Any]] = []
+        loop = asyncio.get_running_loop()
 
         def emit(kind: str, message: str, progress: float | None, metrics: dict[str, Any]) -> None:
-            progress_events.append({"kind": kind, "message": message, "progress": progress, "metrics": metrics, "created_at": utc_now()})
+            event = {"kind": kind, "message": message, "progress": progress, "metrics": metrics, "created_at": utc_now()}
+            progress_events.append(event)
+            if progress is not None:
+                asyncio.run_coroutine_threadsafe(_record_training_progress(job_id, event, progress), loop)
 
         result = await asyncio.to_thread(
             train_user_policy,
@@ -309,6 +478,7 @@ async def _run_training_job(job_id: str) -> None:
         )
         artifact = ModelArtifact(
             user_id=user_id,
+            skill_id=skill_id,
             training_job_id=job_id,
             uri=result["artifact_uri"],
             label_set=result["label_set"],
@@ -321,6 +491,7 @@ async def _run_training_job(job_id: str) -> None:
             job_id,
             {
                 "status": "completed",
+                "progress": 1.0,
                 "example_count": result["example_count"],
                 "artifact_uri": result["artifact_uri"],
                 "metrics": {**result["metrics"], "progress_events": progress_events},
@@ -337,15 +508,46 @@ async def _run_training_job(job_id: str) -> None:
                 "updated_at": utc_now(),
             },
         )
+        if skill_id:
+            trajectory_count = len(trajectories)
+            await store.update(
+                "user_skills",
+                skill_id,
+                {
+                    "status": "ready",
+                    "trajectory_count": trajectory_count,
+                    "model_checkpoint_uri": result["artifact_uri"],
+                    "model_artifact_id": stored_artifact["id"],
+                    "updated_at": utc_now(),
+                },
+            )
         await events.publish({"type": "training_job_completed", "job": updated, "model": stored_artifact})
     except Exception as exc:
         updated = await store.update(
             "training_jobs",
             job_id,
-            {"status": "failed", "error": str(exc), "updated_at": utc_now()},
+            {"status": "failed", "progress": 1.0, "error": str(exc), "updated_at": utc_now()},
         )
         await store.update("users", user_id, {"model_status": "failed", "updated_at": utc_now()})
+        if skill_id:
+            await store.update("user_skills", skill_id, {"status": "failed", "updated_at": utc_now()})
         await events.publish({"type": "training_job_failed", "job": updated, "error": str(exc)})
+
+
+async def _record_training_progress(job_id: str, event: dict[str, Any], progress: float) -> None:
+    job = await store.get("training_jobs", job_id)
+    if not job or job.get("status") == "completed":
+        return
+    metrics = dict(job.get("metrics", {}))
+    recent = list(metrics.get("progress_events", []))[-12:]
+    recent.append(event)
+    metrics["progress_events"] = recent
+    metrics.update(event.get("metrics", {}))
+    await store.update(
+        "training_jobs",
+        job_id,
+        {"progress": progress, "metrics": metrics, "updated_at": utc_now()},
+    )
 
 
 async def _append_event(trajectory: dict[str, Any], request: TrajectoryEventRequest) -> dict[str, Any]:
@@ -395,8 +597,55 @@ async def _require_trajectory(trajectory_id: str) -> dict[str, Any]:
     return trajectory
 
 
-def _task_templates(preferred_sites: list[str]) -> list[dict[str, Any]]:
+async def _require_skill(skill_id: str | None) -> dict[str, Any]:
+    if not skill_id:
+        raise HTTPException(status_code=400, detail="skill_id is required")
+    skill = await store.get("user_skills", skill_id)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return skill
+
+
+def _infer_skill_from_chat(user_turns: list[str]) -> dict[str, Any]:
+    text = " ".join(user_turns).strip()
+    lowered = text.lower()
+    sites = _extract_sites(text)
+    if "receipt" in lowered or "invoice" in lowered:
+        name = "Receipt Finder"
+    elif "calendar" in lowered or "meeting" in lowered:
+        name = "Calendar Assistant"
+    elif "email" in lowered or "gmail" in lowered or "outlook" in lowered:
+        name = "Email Workflow"
+    elif "document" in lowered or "drive" in lowered or "notion" in lowered:
+        name = "Document Search"
+    else:
+        name = "Browser Workflow"
+    goal = text or "Learn a repeated browser workflow from user demonstrations."
+    description = f"Learns how this user completes: {goal[:180]}"
+    return {"name": name, "goal": goal, "description": description, "sites": sites}
+
+
+def _extract_sites(text: str) -> list[str]:
+    known_sites = [
+        "Gmail",
+        "Outlook",
+        "Google Calendar",
+        "Google Drive",
+        "Notion",
+        "Slack",
+        "Linear",
+        "GitHub",
+        "Amazon",
+        "Stripe",
+    ]
+    lowered = text.lower()
+    sites = [site for site in known_sites if site.lower() in lowered]
+    return sites or ["the user's usual browser workspace"]
+
+
+def _task_templates(preferred_sites: list[str], goal: str | None = None) -> list[dict[str, Any]]:
     site_text = ", ".join(preferred_sites[:3]) if preferred_sites else "your usual sites"
+    goal_text = goal or "your repeated workflow"
     return [
         {
             "title": "Open primary email",
@@ -435,8 +684,56 @@ def _task_templates(preferred_sites: list[str]) -> list[dict[str, Any]]:
         },
         {
             "title": "Sensitive action confirmation",
-            "prompt": "Navigate to a form that would require confirmation before submit, then stop before submitting.",
+            "prompt": f"Navigate near a submit/send/delete step related to {goal_text}, then stop before the final action.",
             "success_hint": "The agent asks for confirmation before any send, submit, delete, purchase, or financial action.",
+            "risk_level": "high",
+            "tags": ["safety", "confirmation"],
+        },
+    ]
+
+
+def _skill_task_templates(goal: str, sites: list[str]) -> list[dict[str, Any]]:
+    site_text = ", ".join(sites[:3]) if sites else "the sites involved"
+    return [
+        {
+            "title": "Start from a blank browser",
+            "prompt": f"Open {site_text} and navigate to the place where you normally begin this workflow: {goal}.",
+            "success_hint": "The starting page, account, and workspace are visible.",
+            "risk_level": "low",
+            "tags": ["navigation", "start-state"],
+        },
+        {
+            "title": "Find the right object",
+            "prompt": "Search, filter, or browse until you find the email, event, document, record, or page this workflow usually needs.",
+            "success_hint": "The correct object or result is visible and selected.",
+            "risk_level": "low",
+            "tags": ["search", "selection"],
+        },
+        {
+            "title": "Resolve an ambiguity",
+            "prompt": "When there is an account, folder, workspace, date range, or result choice, pick what you usually pick.",
+            "success_hint": "The preferred user-specific choice is selected.",
+            "risk_level": "medium",
+            "tags": ["preference", "ambiguity"],
+        },
+        {
+            "title": "Complete the normal path",
+            "prompt": "Run the workflow until the useful final state is visible, without taking any sensitive final action.",
+            "success_hint": "The final useful state is visible and no external side effect has been triggered.",
+            "risk_level": "medium",
+            "tags": ["happy-path", "completion"],
+        },
+        {
+            "title": "Recover from a wrong turn",
+            "prompt": "Intentionally go one step into a less useful result or page, then demonstrate how you recover.",
+            "success_hint": "The browser returns to the correct path.",
+            "risk_level": "low",
+            "tags": ["recovery", "correction"],
+        },
+        {
+            "title": "Show the confirmation boundary",
+            "prompt": "Navigate to any send, submit, purchase, delete, or financial step this skill might encounter, then stop before confirming.",
+            "success_hint": "The agent can learn where it must ask before acting.",
             "risk_level": "high",
             "tags": ["safety", "confirmation"],
         },

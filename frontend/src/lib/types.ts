@@ -31,6 +31,41 @@ export type UserProfile = {
   updated_at: string;
 };
 
+export type UserSkill = {
+  id: string;
+  user_id: string;
+  session_id: string;
+  name: string;
+  goal: string;
+  description: string;
+  preferred_sites: string[];
+  status: "draft" | "collecting" | "training" | "ready" | "failed";
+  task_count: number;
+  trajectory_count: number;
+  training_job_id?: string | null;
+  model_checkpoint_uri?: string | null;
+  model_artifact_id?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SkillChatMessage = {
+  role: Actor;
+  content: string;
+  created_at: string;
+};
+
+export type SkillChatSession = {
+  id: string;
+  user_id: string;
+  status: "chatting" | "ready_for_tasks" | "completed";
+  messages: SkillChatMessage[];
+  inferred_goal: string;
+  inferred_sites: string[];
+  created_at: string;
+  updated_at: string;
+};
+
 export type DomNode = {
   selector: string;
   role?: string | null;
@@ -68,11 +103,14 @@ export type BrowserAction = {
 export type OnboardingTask = {
   id: string;
   user_id: string;
+  skill_id?: string | null;
   title: string;
   prompt: string;
   success_hint: string;
   risk_level: "low" | "medium" | "high";
   tags: string[];
+  order: number;
+  metadata: Record<string, unknown>;
   created_at: string;
 };
 
@@ -94,6 +132,7 @@ export type TrajectoryEvent = {
 export type Trajectory = {
   id: string;
   user_id: string;
+  skill_id?: string | null;
   task_id?: string | null;
   task: string;
   source: "onboarding" | "question_takeover" | "manual" | "agent_run";
@@ -108,9 +147,11 @@ export type Trajectory = {
 export type TrainingJob = {
   id: string;
   user_id: string;
+  skill_id?: string | null;
   status: "queued" | "running" | "completed" | "failed";
   epochs: number;
   batch_size: number;
+  progress: number;
   example_count: number;
   artifact_uri?: string | null;
   metrics: Record<string, unknown>;

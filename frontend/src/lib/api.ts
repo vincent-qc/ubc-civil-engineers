@@ -4,9 +4,11 @@ import type {
   BrowserObservation,
   OnboardingTask,
   PredictActionResponse,
+  SkillChatSession,
   Trajectory,
   TrainingJob,
-  UserProfile
+  UserProfile,
+  UserSkill
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -33,45 +35,62 @@ async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<
 }
 
 export const api = {
-  listUsers: () => apiFetch<UserProfile[]>("/api/users"),
-
-  createUser: (displayName: string, emailHint: string, preferences: Record<string, unknown>) =>
-    apiFetch<UserProfile>("/api/users", {
+  login: (displayName: string, emailHint: string) =>
+    apiFetch<UserProfile>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({
         display_name: displayName,
-        email_hint: emailHint || null,
-        preferences
+        email_hint: emailHint || null
       })
     }),
 
-  createTasks: (userId: string, preferredSites: string[]) =>
-    apiFetch<OnboardingTask[]>("/api/onboarding/tasks", {
+  listUsers: () => apiFetch<UserProfile[]>("/api/users"),
+
+  getUser: (userId: string) => apiFetch<UserProfile>(`/api/users/${userId}`),
+
+  listSkills: (userId: string) => apiFetch<UserSkill[]>(`/api/users/${userId}/skills`),
+
+  startSkillSession: (userId: string) =>
+    apiFetch<SkillChatSession>("/api/skills/sessions", {
       method: "POST",
-      body: JSON.stringify({
-        user_id: userId,
-        preferred_sites: preferredSites,
-        count: 6
-      })
+      body: JSON.stringify({ user_id: userId })
     }),
 
-  listTasks: (userId: string) => apiFetch<OnboardingTask[]>(`/api/users/${userId}/tasks`),
+  sendSkillMessage: (sessionId: string, content: string) =>
+    apiFetch<SkillChatSession>(`/api/skills/sessions/${sessionId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content })
+    }),
 
-  listTrajectories: (userId: string) => apiFetch<Trajectory[]>(`/api/users/${userId}/trajectories`),
+  finalizeSkill: (sessionId: string) =>
+    apiFetch<{ session: SkillChatSession; skill: UserSkill; tasks: OnboardingTask[] }>(
+      `/api/skills/sessions/${sessionId}/finalize`,
+      { method: "POST" }
+    ),
 
-  getTrajectory: (trajectoryId: string) => apiFetch<Trajectory>(`/api/trajectories/${trajectoryId}`),
+  listSkillTasks: (skillId: string) => apiFetch<OnboardingTask[]>(`/api/skills/${skillId}/tasks`),
 
-  createTrajectory: (userId: string, task: string, taskId: string | null, observation: BrowserObservation) =>
+  createTrajectory: (
+    userId: string,
+    skillId: string | null,
+    task: string,
+    taskId: string | null,
+    observation: BrowserObservation
+  ) =>
     apiFetch<Trajectory>("/api/trajectories", {
       method: "POST",
       body: JSON.stringify({
         user_id: userId,
+        skill_id: skillId,
         task,
         task_id: taskId,
-        source: taskId ? "onboarding" : "manual",
-        initial_observation: observation
+        source: "onboarding",
+        initial_observation: observation,
+        metadata: { skill_id: skillId }
       })
     }),
+
+  getTrajectory: (trajectoryId: string) => apiFetch<Trajectory>(`/api/trajectories/${trajectoryId}`),
 
   recordEvent: (
     trajectoryId: string,
@@ -91,11 +110,12 @@ export const api = {
       body: JSON.stringify(payload)
     }),
 
-  trainUserModel: (userId: string) =>
+  trainSkillModel: (userId: string, skillId: string) =>
     apiFetch<TrainingJob>("/api/training/jobs", {
       method: "POST",
       body: JSON.stringify({
         user_id: userId,
+        skill_id: skillId,
         epochs: 40,
         batch_size: 16
       })
@@ -103,11 +123,18 @@ export const api = {
 
   getTrainingJob: (jobId: string) => apiFetch<TrainingJob>(`/api/training/jobs/${jobId}`),
 
-  predictAction: (userId: string, task: string, observation: BrowserObservation, previousActions: BrowserAction[]) =>
+  predictAction: (
+    userId: string,
+    skillId: string | null,
+    task: string,
+    observation: BrowserObservation,
+    previousActions: BrowserAction[]
+  ) =>
     apiFetch<PredictActionResponse>("/api/agent/predict", {
       method: "POST",
       body: JSON.stringify({
         user_id: userId,
+        skill_id: skillId,
         task,
         observation,
         previous_actions: previousActions
