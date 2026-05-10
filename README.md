@@ -12,16 +12,20 @@ A local-first browser-use agent that learns one user's browser workflows from de
 ## What Is Implemented
 
 - Per-user profiles with isolated model status and checkpoint URI.
-- Onboarding task generation for common email, calendar, document, ambiguity, and safety workflows.
+- Login/logout in the frontend, backed by local user profiles.
+- Main agent chat with a top-right `Add Skill` flow.
+- Skill creation chat that asks 2-3 prompts, infers the desired browser workflow, then generates 5-6 data-collection tasks.
+- Task collection pages that tell the user what to do, ask them to return and click `Done`, and record browser observations/actions against the current task.
 - Trajectory recording:
   - `action` events for clicks, typing, scrolling, search, URL opens, waits, stops, and key presses.
   - `ask_user` events when the agent needs clarification.
   - `user_answer` events when the user answers in the app.
   - `control_returned` events when the user takes over and hands control back.
   - `success_state` events for final labels.
-- Mongo collections for users, tasks, trajectories, trajectory events, training jobs, and model artifacts.
-- Backend training endpoint that gathers only one user's trajectories and writes a unique PyTorch checkpoint under `MODEL_OUTPUT_DIR/{user_id}/{training_job_id}`.
-- Prediction endpoint that uses the user's checkpoint when available and falls back to conservative heuristics otherwise.
+- Mongo collections for users, skill chats, skills, tasks, trajectories, trajectory events, training jobs, and model artifacts.
+- Backend training endpoint that gathers only one user's skill-tagged trajectories and writes a unique PyTorch checkpoint under `MODEL_OUTPUT_DIR/{user_id}/{training_job_id}`.
+- Training progress and stats surfaced in the frontend before returning to the original agent chat.
+- Prediction endpoint that uses the trained skill checkpoint when available and falls back to conservative heuristics otherwise.
 - Safety gate that marks sensitive actions as requiring confirmation before execution.
 
 ## Quick Start
@@ -85,7 +89,11 @@ If the user takes over the browser, each manual click/type/scroll is recorded as
 ## API Highlights
 
 - `POST /api/users`
-- `POST /api/onboarding/tasks`
+- `POST /api/auth/login`
+- `POST /api/skills/sessions`
+- `POST /api/skills/sessions/{session_id}/messages`
+- `POST /api/skills/sessions/{session_id}/finalize`
+- `GET /api/users/{user_id}/skills`
 - `POST /api/trajectories`
 - `POST /api/trajectories/{trajectory_id}/events`
 - `POST /api/recordings/bulk`

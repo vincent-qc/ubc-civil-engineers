@@ -374,7 +374,7 @@ small {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 940px) {
+@media (max-width: 1120px) {
   .appHeader {
     align-items: flex-start;
     flex-direction: column;
