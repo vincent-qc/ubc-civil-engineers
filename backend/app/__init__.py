@@ -1,1 +1,1 @@
-"""Fine-tuning marketplace backend."""
+"""Personal browser-use agent backend."""

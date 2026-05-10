@@ -13,15 +13,19 @@ except Exception:  # pragma: no cover - dependency may be absent in syntax-only 
 
 logger = logging.getLogger(__name__)
 
+COLLECTIONS = [
+    "users",
+    "onboarding_tasks",
+    "trajectories",
+    "trajectory_events",
+    "training_jobs",
+    "model_artifacts",
+]
+
 
 class MemoryStore:
     def __init__(self) -> None:
-        self.collections: dict[str, dict[str, dict[str, Any]]] = {
-            "reports": {},
-            "jobs": {},
-            "workers": {},
-            "events": {},
-        }
+        self.collections: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in COLLECTIONS}
 
     async def connect(self) -> None:
         logger.warning("Using in-memory store. Set MONGODB_URI for persistent MongoDB.")
@@ -64,11 +68,18 @@ class MongoStore:
 
     async def connect(self) -> None:
         await self.client.admin.command("ping")
-        for name in ["reports", "jobs", "workers", "events"]:
+        for name in COLLECTIONS:
             await self.db[name].create_index("id", unique=True)
-        await self.db.jobs.create_index("status")
-        await self.db.jobs.create_index("assigned_worker_id")
-        await self.db.workers.create_index("status")
+            await self.db[name].create_index("created_at")
+        await self.db.users.create_index("model_status")
+        await self.db.onboarding_tasks.create_index("user_id")
+        await self.db.trajectories.create_index("user_id")
+        await self.db.trajectories.create_index("task_id")
+        await self.db.trajectory_events.create_index("trajectory_id")
+        await self.db.trajectory_events.create_index("user_id")
+        await self.db.training_jobs.create_index("user_id")
+        await self.db.training_jobs.create_index("status")
+        await self.db.model_artifacts.create_index("user_id")
 
     async def close(self) -> None:
         self.client.close()

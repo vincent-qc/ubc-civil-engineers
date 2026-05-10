@@ -1,1 +1,0 @@
-"""Deterministic worker scheduling policy."""

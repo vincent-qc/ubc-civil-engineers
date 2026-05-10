@@ -1,1 +1,0 @@
-"""Local worker process."""

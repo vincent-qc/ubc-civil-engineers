@@ -1,53 +1,47 @@
-# Distributed Fine-Tuning Marketplace
+# Personal Browser-Use Agent
 
-Local-first marketplace for fine-tuning jobs. Users describe a training goal to an
-agent, the agent writes a saved `TrainingReport`, and local worker apps run
-standard PyTorch LoRA SFT jobs on available consumer compute.
+A local-first browser-use agent that learns one user's browser workflows from demonstrations. The app records browser observations, DOM/accessibility-like nodes, user and agent actions, agent questions, user answers, and takeover actions. After data collection, the FastAPI backend trains a separate PyTorch action policy checkpoint for that user.
 
 ## Stack
 
-- React + TypeScript frontend powered by Vite
+- Next.js + TypeScript frontend
 - FastAPI backend
-- MongoDB for persistent reports, jobs, workers, and events
-- PyTorch for standard LoRA fine-tuning
-- Nia-compatible dataset search harness
-- Generic agent harness with `clod` demo mode and optional Gemini provider
+- MongoDB persistence, with in-memory fallback for local demos
+- PyTorch behavioral cloning for per-user browser action policies
 
-## Local Compute Model
+## What Is Implemented
 
-Browsers cannot safely access local GPUs directly, so the web app talks only to
-FastAPI. Every compute machine runs a local Python worker:
-
-1. Worker registers its CPU/GPU/VRAM capabilities with the API.
-2. Worker heartbeats while idle or training.
-3. Backend assigns queued jobs to available workers with a transparent heuristic.
-4. Worker runs PyTorch locally and streams progress/events back to the API.
-5. Frontend reads live job state through SSE.
-
-This works for one laptop, multiple machines on a LAN, or a public marketplace
-behind authenticated API endpoints.
+- Per-user profiles with isolated model status and checkpoint URI.
+- Onboarding task generation for common email, calendar, document, ambiguity, and safety workflows.
+- Trajectory recording:
+  - `action` events for clicks, typing, scrolling, search, URL opens, waits, stops, and key presses.
+  - `ask_user` events when the agent needs clarification.
+  - `user_answer` events when the user answers in the app.
+  - `control_returned` events when the user takes over and hands control back.
+  - `success_state` events for final labels.
+- Mongo collections for users, tasks, trajectories, trajectory events, training jobs, and model artifacts.
+- Backend training endpoint that gathers only one user's trajectories and writes a unique PyTorch checkpoint under `MODEL_OUTPUT_DIR/{user_id}/{training_job_id}`.
+- Prediction endpoint that uses the user's checkpoint when available and falls back to conservative heuristics otherwise.
+- Safety gate that marks sensitive actions as requiring confirmation before execution.
 
 ## Quick Start
-
-One-command local startup:
 
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-To also start a local training worker:
+Open:
 
-```bash
-START_WORKER=1 ./start.sh
-```
+- Frontend: `http://localhost:3000`
+- Backend docs: `http://localhost:8000/docs`
 
 Manual startup:
 
 ```bash
 docker compose up -d mongo
 
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
 uvicorn app.main:app --reload --app-dir backend
@@ -60,51 +54,54 @@ npm install --prefix frontend
 npm run dev --prefix frontend
 ```
 
-Register a local worker:
+## Recording User Questions And Takeovers
 
-```bash
-source .venv/bin/activate
-pip install -r backend/requirements-worker.txt
-PYTHONPATH=backend python -m app.worker.local_worker --api http://localhost:8000 --name "Local GPU" --output ./runs
+When the agent asks a question, the recorder stores it as a normal trajectory event:
+
+```json
+{
+  "actor": "agent",
+  "event_type": "ask_user",
+  "question": "Should I search all mail or only the inbox?",
+  "action": {
+    "type": "ask_user",
+    "question": "Should I search all mail or only the inbox?"
+  }
+}
 ```
 
-Open the frontend at `http://localhost:5173`.
+If the user answers in the app, the answer is stored:
 
-## Environment
+```json
+{
+  "actor": "user",
+  "event_type": "user_answer",
+  "answer": "All mail"
+}
+```
 
-Copy `.env.example` to `.env` for local development.
-
-- `MONGODB_URI`: Mongo connection string.
-- `MONGODB_DB`: database name.
-- `AGENT_PROVIDER`: `clod` for local demo mode or `gemini`.
-- `GEMINI_API_KEY`: used only when `AGENT_PROVIDER=gemini`.
-- `NIA_BASE_URL`: optional Nia-compatible search service URL.
-- `USE_REAL_LORA`: set to `true` on a worker to run the Transformers/PEFT path.
-
-By default the worker runs a tiny PyTorch LoRA-style training loop so the full
-marketplace flow can be demonstrated without downloading a base model. Set
-`USE_REAL_LORA=true` when the machine has the Hugging Face stack, model access,
-and enough compute.
+If the user takes over the browser, each manual click/type/scroll is recorded as a user `action`, followed by `control_returned`. Those takeover actions become strong supervision for similar states later.
 
 ## API Highlights
 
-- `POST /api/agent/training-report`: convert chat into a saved training report.
-- `POST /api/datasets/search`: search datasets through Nia or demo fallback.
-- `POST /api/jobs`: create a training job from a report.
-- `GET /api/jobs`: list jobs.
-- `POST /api/workers/register`: register a local compute worker.
-- `GET /api/workers/{worker_id}/next-job`: worker polling endpoint.
-- `GET /api/events`: server-sent event stream for live UI updates.
+- `POST /api/users`
+- `POST /api/onboarding/tasks`
+- `POST /api/trajectories`
+- `POST /api/trajectories/{trajectory_id}/events`
+- `POST /api/recordings/bulk`
+- `POST /api/training/jobs`
+- `POST /api/agent/predict`
+- `GET /api/events`
 
-## Project Layout
+## Environment
 
-```text
-backend/
-  app/
-    agents/        # CLōD/Gemini harness and Nia search client
-    scheduler/     # deterministic worker-ranking policy
-    training/      # PyTorch LoRA runner
-    worker/        # Local compute worker process
-frontend/
-  src/             # React TypeScript dashboard
-```
+Copy `.env.example` to `.env` if you want to change defaults.
+
+- `MONGODB_URI`: Mongo connection string.
+- `MONGODB_DB`: database name.
+- `ALLOW_MEMORY_FALLBACK`: use in-memory storage if Mongo is unavailable.
+- `CORS_ORIGINS`: allowed frontend origins.
+- `MODEL_OUTPUT_DIR`: where per-user PyTorch checkpoints are written.
+- `NEXT_PUBLIC_API_URL`: frontend API base URL.
+
+PyTorch wheels may not be available for the newest Python interpreter on your machine. If `pip install -r backend/requirements.txt` cannot resolve `torch`, run the backend with Python 3.11 or 3.12, for example `PYTHON_BIN=python3.12 ./start.sh`.

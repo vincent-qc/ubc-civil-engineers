@@ -2,7 +2,11 @@
 .venv/
 __pycache__/
 *.pyc
+*.tsbuildinfo
 node_modules/
-frontend/dist/
+.next/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
 runs/
 .DS_Store
