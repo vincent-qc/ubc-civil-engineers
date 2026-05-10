@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Personal Browser Agent Recorder",
+  "version": "1.0.0",
+  "description": "Records browser interactions for personal agent training",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content/index.js"],
+    "run_at": "document_idle"
+  }],
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_icon": {
+      "16": "assets/icon-16.svg",
+      "48": "assets/icon-48.svg",
+      "128": "assets/icon-128.svg"
+    }
+  },
+  "icons": {
+    "16": "assets/icon-16.svg",
+    "48": "assets/icon-48.svg",
+    "128": "assets/icon-128.svg"
+  }
+}
