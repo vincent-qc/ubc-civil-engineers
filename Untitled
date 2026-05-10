@@ -1,0 +1,11 @@
+Setup Instructions Needed:
+
+Provide a README.md with step-by-step instructions on how to:
+
+Load the unpacked extension into chrome://extensions/.
+
+Spin up the backend (including requirements.txt/package.json).
+
+Run the frontend development server.
+
+Constraint: Ensure the extension handles "Tab Switching" by updating the URL and Page Title fields in the UI automatically when the active tab changes.

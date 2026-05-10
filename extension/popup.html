@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Browser Agent Tracker</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 12px;
+        font: 13px/1.4 system-ui, sans-serif;
+        color: #17201a;
+        background: #fbfcf8;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 10px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-top: 10px;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 6px 8px;
+        margin-top: 4px;
+        border: 1px solid #d8ded6;
+        border-radius: 6px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button {
+        width: 100%;
+        margin-top: 10px;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid #1a8274;
+        background: #1a8274;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        border-color: #d8ded6;
+        background: #fff;
+        color: #17201a;
+      }
+      small {
+        display: block;
+        color: #65706a;
+        margin-top: 6px;
+      }
+      .status {
+        margin-top: 10px;
+        padding: 8px;
+        border-radius: 8px;
+        background: #dcefe8;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Personal Browser Agent</h1>
+    <label>
+      Backend URL
+      <input type="text" id="backendUrl" placeholder="http://127.0.0.1:8001" autocomplete="off" />
+    </label>
+    <label>
+      User ID
+      <input type="text" id="userId" placeholder="user_… from workbench" autocomplete="off" />
+    </label>
+    <label>
+      Trajectory ID (optional)
+      <input type="text" id="trajectoryId" placeholder="traj_… after Start recording" autocomplete="off" />
+    </label>
+    <label>
+      Extension token (if EXTENSION_SHARED_SECRET is set)
+      <input type="text" id="extensionToken" placeholder="optional" autocomplete="off" />
+    </label>
+    <div class="row">
+      <input type="checkbox" id="recording" />
+      <label for="recording" style="margin: 0; font-weight: 600">Record interactions</label>
+    </div>
+    <button type="button" id="save">Save settings</button>
+    <button type="button" class="secondary" id="syncTab">Sync active tab now</button>
+    <div class="status" id="status">Loading…</div>
+    <small>Tab URL/title are pushed when you switch tabs or finish navigation. Toggle Record to capture clicks, focus, typing, scroll, and pointer moves (throttled).</small>
+    <script src="popup.js"></script>
+  </body>
+</html>

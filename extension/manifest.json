@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Personal Browser Agent — Tracker",
+  "version": "0.1.0",
+  "description": "Records browser interactions for the local Personal Browser Agent training workbench.",
+  "permissions": ["storage", "tabs", "scripting"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "Browser Agent Tracker",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
