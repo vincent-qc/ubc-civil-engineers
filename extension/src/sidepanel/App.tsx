@@ -215,6 +215,14 @@ function RecIndicator({
       </div>
     );
   }
+  if (connectionState === "recorder_unavailable") {
+    return (
+      <div className="panel-rec-indicator">
+        <div className="rec-dot pulse" style={{ background: "var(--amber)" }} />
+        NO KEY
+      </div>
+    );
+  }
   if (connectionState === "connecting") {
     return (
       <div className="panel-rec-indicator">

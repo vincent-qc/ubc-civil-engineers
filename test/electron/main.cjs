@@ -499,6 +499,263 @@ ipcMain.handle('computer:stop', async () => {
   return { ok: true };
 });
 
+// ---- HTTP REST server for the Chrome extension ----
+const http = require('node:http');
+
+const HTTP_PORT = 8000;
+
+function jsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => {
+      try { resolve(data ? JSON.parse(data) : {}); }
+      catch { reject(new Error('Invalid JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function send(res, status, body) {
+  const json = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  res.end(json);
+}
+
+function recorderStatusPayload() {
+  if (activeRecording) {
+    return {
+      state: 'recording',
+      session_id: activeRecording.label,
+      trajectory_id: null,
+      skill_id: null,
+      task_id: null,
+      started_at: activeRecording.startedAt,
+      paused_at: null,
+    };
+  }
+  return { state: 'idle', session_id: null, trajectory_id: null,
+           skill_id: null, task_id: null, started_at: null, paused_at: null };
+}
+
+function mapSkill(skill) {
+  return {
+    id: skill.id,
+    name: skill.name || skill.label,
+    description: skill.cuaAnalysis?.summary || skill.label || '',
+    status: skill.enabled !== false ? 'ready' : 'draft',
+    task_count: skill.cuaAnalysis?.in_context_example ? 1 : 0,
+    trajectory_count: 0,
+    created_at: skill.createdAt,
+    updated_at: skill.createdAt,
+  };
+}
+
+const httpServer = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://localhost:${HTTP_PORT}`);
+  const { pathname } = url;
+
+  if (req.method === 'OPTIONS') return send(res, 204, {});
+
+  try {
+    if (req.method === 'GET' && pathname === '/api/health') {
+      return send(res, 200, {
+        status: 'ok',
+        version: '0.1.0',
+        recorder_available: true,
+      });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/recorder/status') {
+      return send(res, 200, recorderStatusPayload());
+    }
+
+    if (req.method === 'GET' && pathname === '/api/session/current') {
+      const rec = recorderStatusPayload();
+      return send(res, 200, {
+        user_id: 'local',
+        user_display_name: 'Local User',
+        active_skill_id: null,
+        active_task_id: null,
+        active_trajectory_id: null,
+        recording_state: rec.state,
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/recorder/start') {
+      const body = await jsonBody(req);
+      const label = String(body.task_id || body.skill_id || body.context?.title || 'recording').trim();
+      if (activeRecording) return send(res, 409, { error: 'A recording is already active.' });
+
+      const child = spawn(desktopDriverPath(), ['record'], {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      const recording = {
+        child, label,
+        trajectory: [],
+        metadata: null,
+        startedAt: new Date().toISOString(),
+        stdoutBuffer: '',
+        nextSequence: 0,
+        sampleQueue: Promise.resolve(),
+      };
+      activeRecording = recording;
+
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', chunk => {
+        recording.stdoutBuffer += chunk;
+        const lines = recording.stdoutBuffer.split('\n');
+        recording.stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.kind === 'recording_started') {
+              recording.metadata = event;
+              sendRecordingEvent({ type: 'started', label, metadata: event });
+            } else {
+              appendRecordingSample(recording, event);
+            }
+          } catch {}
+        }
+      });
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', chunk => sendRecordingEvent({ type: 'error', text: chunk.trim() }));
+      child.on('error', error => {
+        if (activeRecording === recording) activeRecording = null;
+        sendRecordingEvent({ type: 'error', text: error.message });
+      });
+      child.on('close', (code, signal) => {
+        if (activeRecording === recording) {
+          activeRecording = null;
+          sendRecordingEvent({ type: 'error', text: `Stopped unexpectedly${signal ? ` (${signal})` : ''}` });
+        }
+      });
+
+      return send(res, 200, {
+        ok: true,
+        session_id: label,
+        trajectory_id: null,
+        recording_state: 'recording',
+      });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/recorder/pause') {
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/recorder/resume') {
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'POST' && pathname === '/api/recorder/stop') {
+      const result = await stopActiveRecording();
+      return send(res, result.ok ? 200 : 400, { ok: result.ok, error: result.error });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/skills') {
+      return send(res, 200, readSkills().map(compactSkill).map(mapSkill));
+    }
+
+    const activateMatch = pathname.match(/^\/api\/skills\/([^/]+)\/activate$/);
+    if (req.method === 'POST' && activateMatch) {
+      const id = activateMatch[1];
+      const skills = readSkills();
+      const next = skills.map(s => s.id === id ? { ...s, enabled: true } : s);
+      writeSkills(next);
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/gregory/conversations/current') {
+      return send(res, 200, null);
+    }
+
+    if (req.method === 'POST' && pathname === '/api/gregory/messages') {
+      const body = await jsonBody(req);
+      const skillPrompt = String(body.message || '').trim();
+      if (!skillPrompt) return send(res, 400, { error: 'message is required' });
+
+      const config = configFromEnvironment();
+      if (!config.hasApiKey) {
+        const conversationId = body.conversation_id || `conv-${Date.now()}`;
+        const now = new Date().toISOString();
+        return send(res, 200, {
+          conversation_id: conversationId,
+          messages: [
+            { id: `msg-u-${Date.now()}`, role: 'user', content: skillPrompt, created_at: now },
+            { id: `msg-a-${Date.now()}`, role: 'assistant', content: 'No API key found. Set `CLOD_API_KEY` in your shell and restart the Electron app to use Gregory.', created_at: now },
+          ],
+          pending_question: null,
+        });
+      }
+
+      const result = await suggestTrajectoryTasks({ skillPrompt, model: config.model });
+      const conversationId = body.conversation_id || `conv-${Date.now()}`;
+      const now = new Date().toISOString();
+
+      let assistantContent;
+      if (result && result.length > 0) {
+        assistantContent = result
+          .map((t, i) => `**Task ${i + 1}: ${t.title}**\n${t.instruction}${t.why ? `\n_Why: ${t.why}_` : ''}`)
+          .join('\n\n');
+      } else {
+        assistantContent = "I couldn't generate task suggestions for that. Try being more specific.";
+      }
+
+      return send(res, 200, {
+        conversation_id: conversationId,
+        messages: [
+          { id: `msg-u-${Date.now()}`, role: 'user', content: skillPrompt, created_at: now },
+          { id: `msg-a-${Date.now()}`, role: 'assistant', content: assistantContent, created_at: now },
+        ],
+        pending_question: null,
+      });
+    }
+
+    if (req.method === 'GET' && pathname === '/api/tasks/active') {
+      return send(res, 200, null);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/safety/pending') {
+      return send(res, 200, []);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/training/jobs') {
+      return send(res, 200, []);
+    }
+
+    if (req.method === 'GET' && pathname === '/api/model/status') {
+      const config = configFromEnvironment();
+      return send(res, 200, {
+        is_loaded: Boolean(config.hasApiKey),
+        model_id: config.model || null,
+        skill_id: null,
+        last_trained_at: null,
+      });
+    }
+
+    return send(res, 404, { error: 'Not found' });
+  } catch (error) {
+    console.error('[HTTP server]', error);
+    return send(res, 500, { error: error.message });
+  }
+});
+
+httpServer.on('error', (err) => {
+  console.error('[HTTP server] Failed to start:', err.message);
+});
+
+httpServer.listen(HTTP_PORT, '127.0.0.1', () => {
+  console.log(`[HTTP server] Listening on http://127.0.0.1:${HTTP_PORT}`);
+});
+
 app.whenReady().then(() => {
   createWindow();
 

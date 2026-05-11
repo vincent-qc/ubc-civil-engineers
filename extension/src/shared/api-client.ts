@@ -80,11 +80,7 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
  * Poll this every 2–3 seconds from the service worker while the extension is open.
  */
 export async function checkHealth(): Promise<HealthResponse> {
-  // TODO: return apiFetch<HealthResponse>("/api/health");
-
-  // STUB — remove when backend is available ↓
-  await delay(200);
-  return { status: "ok", version: "0.0.0-stub", recorder_available: false };
+  return apiFetch<HealthResponse>("/api/health");
 }
 
 /**
@@ -94,19 +90,7 @@ export async function checkHealth(): Promise<HealthResponse> {
  * active session, trajectory, skill, and task.
  */
 export async function getRecorderStatus(): Promise<RecorderStatus> {
-  // TODO: return apiFetch<RecorderStatus>("/api/recorder/status");
-
-  // STUB ↓
-  await delay(100);
-  return {
-    state: "idle",
-    session_id: null,
-    trajectory_id: null,
-    skill_id: null,
-    task_id: null,
-    started_at: null,
-    paused_at: null,
-  };
+  return apiFetch<RecorderStatus>("/api/recorder/status");
 }
 
 /**
@@ -116,11 +100,7 @@ export async function getRecorderStatus(): Promise<RecorderStatus> {
  * and what the current recording state is.  Returns null if no session exists.
  */
 export async function getSessionState(): Promise<SessionState | null> {
-  // TODO: return apiFetch<SessionState | null>("/api/session/current");
-
-  // STUB ↓
-  await delay(100);
-  return null;
+  return apiFetch<SessionState | null>("/api/session/current");
 }
 
 // ----------------------------------------------------------------
@@ -137,21 +117,10 @@ export async function getSessionState(): Promise<SessionState | null> {
  *   { ok, session_id, trajectory_id, recording_state }
  */
 export async function startRecording(req: StartRecordingRequest): Promise<StartRecordingResponse> {
-  // TODO:
-  // return apiFetch<StartRecordingResponse>("/api/recorder/start", {
-  //   method: "POST",
-  //   body: JSON.stringify(req),
-  // });
-
-  // STUB ↓
-  console.log("[API STUB] startRecording →", req);
-  await delay(400);
-  return {
-    ok: true,
-    session_id: "stub-session-001",
-    trajectory_id: "stub-traj-001",
-    recording_state: "recording",
-  };
+  return apiFetch<StartRecordingResponse>("/api/recorder/start", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 /**
@@ -182,12 +151,7 @@ export async function resumeRecording(): Promise<{ ok: boolean }> {
  * POST /api/recorder/stop
  */
 export async function stopRecording(): Promise<{ ok: boolean }> {
-  // TODO: return apiFetch("/api/recorder/stop", { method: "POST" });
-
-  // STUB ↓
-  console.log("[API STUB] stopRecording");
-  await delay(300);
-  return { ok: true };
+  return apiFetch("/api/recorder/stop", { method: "POST" });
 }
 
 // ----------------------------------------------------------------
@@ -218,34 +182,10 @@ export async function getCurrentConversation(): Promise<GregoryConversation | nu
  *   { conversation_id, messages, pending_question }
  */
 export async function sendGregoryMessage(req: SendMessageRequest): Promise<SendMessageResponse> {
-  // TODO:
-  // return apiFetch<SendMessageResponse>("/api/gregory/messages", {
-  //   method: "POST",
-  //   body: JSON.stringify(req),
-  // });
-
-  // STUB ↓
-  console.log("[API STUB] sendGregoryMessage →", req);
-  await delay(900);
-  return {
-    conversation_id: req.conversation_id ?? "stub-conv-001",
-    messages: [
-      {
-        id: "stub-u-1",
-        role: "user",
-        content: req.message,
-        created_at: new Date().toISOString(),
-      },
-      {
-        id: "stub-a-1",
-        role: "assistant",
-        content:
-          "[STUB] Gregory backend not yet connected. This is where Gregory's reply would appear.",
-        created_at: new Date().toISOString(),
-      },
-    ],
-    pending_question: null,
-  };
+  return apiFetch<SendMessageResponse>("/api/gregory/messages", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 // ----------------------------------------------------------------
@@ -256,11 +196,7 @@ export async function sendGregoryMessage(req: SendMessageRequest): Promise<SendM
  * GET /api/skills
  */
 export async function listSkills(): Promise<Skill[]> {
-  // TODO: return apiFetch<Skill[]>("/api/skills");
-
-  // STUB ↓
-  await delay(200);
-  return [];
+  return apiFetch<Skill[]>("/api/skills");
 }
 
 /**
@@ -295,13 +231,7 @@ export async function createSkill(params: { name: string; description: string })
  * POST /api/skills/{skill_id}/activate
  */
 export async function activateSkill(skillId: string): Promise<{ ok: boolean }> {
-  // TODO:
-  // return apiFetch(`/api/skills/${skillId}/activate`, { method: "POST" });
-
-  // STUB ↓
-  console.log("[API STUB] activateSkill →", skillId);
-  await delay(200);
-  return { ok: true };
+  return apiFetch(`/api/skills/${skillId}/activate`, { method: "POST" });
 }
 
 // ----------------------------------------------------------------
@@ -448,11 +378,7 @@ export async function listTrainingJobs(): Promise<TrainingJob[]> {
  * GET /api/model/status
  */
 export async function getModelStatus(): Promise<ModelStatus> {
-  // TODO: return apiFetch<ModelStatus>("/api/model/status");
-
-  // STUB ↓
-  await delay(100);
-  return { is_loaded: false, model_id: null, skill_id: null, last_trained_at: null };
+  return apiFetch<ModelStatus>("/api/model/status");
 }
 
 // ----------------------------------------------------------------
