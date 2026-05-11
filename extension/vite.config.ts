@@ -104,8 +104,11 @@ const copyAssets = () => ({
 // manifest.json and icons live in public/ and are copied as-is.
 export default defineConfig({
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   plugins: [react()],
 =======
+=======
+>>>>>>> Stashed changes
   plugins: [react(), inlineContentScript(), copyAssets()],
   base: './',
 >>>>>>> Stashed changes
@@ -130,8 +133,13 @@ export default defineConfig({
           return "[name]/[name].js";
         },
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
         chunkFileNames: "shared/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
+=======
+        // Don't code split - force all code to be inlined
+        manualChunks: () => null,
+>>>>>>> Stashed changes
 =======
         // Don't code split - force all code to be inlined
         manualChunks: () => null,
