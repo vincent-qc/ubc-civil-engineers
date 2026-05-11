@@ -4,17 +4,13 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const {
-  analyzeTrajectoryDatapoint,
-  captureScreenshot,
-  configFromEnvironment,
-  runComputerUse,
-  suggestTrajectoryTasks
-} = require('../lib/computer-use.cjs');
+const clodCua = require('../lib/computer-use.cjs');
+const gptCua = require('../lib/gptcua.cjs');
 
 let mainWindow;
 let activeRun = null;
 let activeRecording = null;
+let stoppingRecording = null;
 const completedRecordings = [];
 
 function skillsFilePath() {
@@ -76,13 +72,37 @@ function enabledSkillsForPrompt() {
   return readSkills().filter((skill) => skill.enabled !== false).map(compactSkill);
 }
 
+function routeForEnabledSkills(enabledSkills = enabledSkillsForPrompt()) {
+  if (enabledSkills.length === 0) {
+    return {
+      provider: 'clod',
+      backend: clodCua,
+      config: clodCua.configFromEnvironment()
+    };
+  }
+
+  return {
+    provider: 'openai',
+    backend: gptCua,
+    config: gptCua.configFromEnvironment()
+  };
+}
+
+function routedConfig() {
+  const route = routeForEnabledSkills();
+  return {
+    ...route.config,
+    provider: route.provider
+  };
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 760,
     minWidth: 1000,
     minHeight: 560,
-    title: 'CLOD Computer Use',
+    title: 'GPT Computer Use',
     backgroundColor: '#f7f7f2',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -132,6 +152,28 @@ function sendRecordingEvent(payload) {
   mainWindow.webContents.send('recording:event', payload);
 }
 
+function waitForChildClose(child, timeoutMs = 1500) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let forceTimeout;
+    const timeout = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
+      forceTimeout = setTimeout(resolve, 1000);
+    }, timeoutMs);
+
+    child.once('close', () => {
+      clearTimeout(timeout);
+      clearTimeout(forceTimeout);
+      resolve();
+    });
+  });
+}
+
 function desktopDriverPath() {
   return path.join(process.cwd(), 'bin', 'desktop-driver');
 }
@@ -178,11 +220,17 @@ function appendRecordingSample(recording, event) {
     ...event
   };
   recording.trajectory.push(datapoint);
-  sendRecordingEvent({ type: 'sample', label: recording.label, sample: compactSample(datapoint), count: recording.trajectory.length });
+  sendRecordingEvent({
+    type: 'sample',
+    label: recording.label,
+    taskId: recording.taskId,
+    sample: compactSample(datapoint),
+    count: recording.trajectory.length
+  });
 
   recording.sampleQueue = recording.sampleQueue.then(async () => {
     try {
-      const screenshot = await captureScreenshot();
+      const screenshot = await gptCua.captureScreenshot();
       datapoint.screenshot = {
         ...screenshot,
         capturedAt: new Date().toISOString()
@@ -193,11 +241,37 @@ function appendRecordingSample(recording, event) {
         capturedAt: new Date().toISOString()
       };
     }
-    sendRecordingEvent({ type: 'sample_updated', label: recording.label, sample: compactSample(datapoint), count: recording.trajectory.length });
+    sendRecordingEvent({
+      type: 'sample_updated',
+      label: recording.label,
+      taskId: recording.taskId,
+      sample: compactSample(datapoint),
+      count: recording.trajectory.length
+    });
   });
 }
 
-async function stopActiveRecording() {
+async function analyzeRecordingDatapoint(datapoint, label, taskId) {
+  try {
+    sendRecordingEvent({ type: 'analyzing', label, taskId, datapoint: compactDatapoint(datapoint) });
+    datapoint.cuaAnalysis = await gptCua.analyzeTrajectoryDatapoint({
+      datapoint,
+      model: gptCua.configFromEnvironment().model
+    });
+    const skill = saveSkillFromDatapoint(datapoint);
+    sendRecordingEvent({ type: 'analyzed', taskId, datapoint: compactDatapoint(datapoint), analysis: datapoint.cuaAnalysis });
+    sendRecordingEvent({ type: 'skill_saved', taskId, skill });
+  } catch (error) {
+    datapoint.cuaAnalysisError = error.message;
+    sendRecordingEvent({ type: 'analysis_error', taskId, text: error.message, datapoint: compactDatapoint(datapoint) });
+  }
+}
+
+async function stopActiveRecording({ discardEmpty = false, analyzeInBackground = false } = {}) {
+  if (stoppingRecording) {
+    return stoppingRecording;
+  }
+
   if (!activeRecording) {
     return { ok: false, error: 'No recording is active.' };
   }
@@ -205,41 +279,59 @@ async function stopActiveRecording() {
   const recording = activeRecording;
   activeRecording = null;
 
-  if (!recording.child.killed) {
-    recording.child.kill('SIGTERM');
-  }
+  stoppingRecording = (async () => {
+    if (!recording.child.killed) {
+      recording.child.kill('SIGTERM');
+    }
 
-  await recording.sampleQueue;
+    await waitForChildClose(recording.child);
 
-  const datapoint = {
-    label: recording.label,
-    trajectory: recording.trajectory,
-    startedAt: recording.startedAt,
-    endedAt: new Date().toISOString(),
-    metadata: recording.metadata
-  };
+    if (recording.trajectory.length === 0 && discardEmpty) {
+    sendRecordingEvent({ type: 'discarded', label: recording.label, taskId: recording.taskId, reason: 'No datapoints captured.' });
+      return { ok: true, discarded: true, recordings: completedRecordings.map(compactDatapoint) };
+    }
 
-  completedRecordings.push(datapoint);
-  sendRecordingEvent({ type: 'stopped', datapoint: compactDatapoint(datapoint) });
+    const datapoint = {
+      label: recording.label,
+      taskId: recording.taskId,
+      trajectory: recording.trajectory,
+      startedAt: recording.startedAt,
+      endedAt: new Date().toISOString(),
+      metadata: recording.metadata
+    };
+
+    completedRecordings.push(datapoint);
+    sendRecordingEvent({ type: 'stopped', taskId: recording.taskId, datapoint: compactDatapoint(datapoint) });
+
+    const finishDatapoint = async () => {
+      await recording.sampleQueue;
+      if (analyzeInBackground) {
+        await analyzeRecordingDatapoint(datapoint, recording.label, recording.taskId);
+      }
+    };
+
+    if (analyzeInBackground) {
+      finishDatapoint().catch((error) => {
+        sendRecordingEvent({ type: 'analysis_error', taskId: recording.taskId, text: error.message, datapoint: compactDatapoint(datapoint) });
+      });
+    } else {
+      await recording.sampleQueue;
+      await analyzeRecordingDatapoint(datapoint, recording.label, recording.taskId);
+    }
+
+    return { ok: true, datapoint: compactDatapoint(datapoint), recordings: completedRecordings.map(compactDatapoint) };
+  })();
 
   try {
-    sendRecordingEvent({ type: 'analyzing', label: recording.label });
-    datapoint.cuaAnalysis = await analyzeTrajectoryDatapoint({
-      datapoint,
-      model: configFromEnvironment().model
-    });
-    const skill = saveSkillFromDatapoint(datapoint);
-    sendRecordingEvent({ type: 'analyzed', datapoint: compactDatapoint(datapoint), analysis: datapoint.cuaAnalysis });
-    sendRecordingEvent({ type: 'skill_saved', skill });
-  } catch (error) {
-    datapoint.cuaAnalysisError = error.message;
-    sendRecordingEvent({ type: 'analysis_error', text: error.message, datapoint: compactDatapoint(datapoint) });
+    return await stoppingRecording;
+  } finally {
+    if (stoppingRecording) {
+      stoppingRecording = null;
+    }
   }
-
-  return { ok: true, datapoint: compactDatapoint(datapoint), recordings: completedRecordings.map(compactDatapoint) };
 }
 
-ipcMain.handle('computer:config', () => configFromEnvironment());
+ipcMain.handle('computer:config', () => routedConfig());
 
 ipcMain.handle('skill:suggest-trajectories', async (_event, request) => {
   const skillPrompt = String(request?.skillPrompt || '').trim();
@@ -248,8 +340,8 @@ ipcMain.handle('skill:suggest-trajectories', async (_event, request) => {
   }
 
   try {
-    const config = configFromEnvironment();
-    const tasks = await suggestTrajectoryTasks({
+    const config = gptCua.configFromEnvironment();
+    const tasks = await gptCua.suggestTrajectoryTasks({
       skillPrompt,
       model: String(request?.model || config.model).trim()
     });
@@ -261,12 +353,20 @@ ipcMain.handle('skill:suggest-trajectories', async (_event, request) => {
 
 ipcMain.handle('recording:start', async (_event, request) => {
   const label = String(request?.label || '').trim();
+  const taskId = String(request?.taskId || '').trim();
   if (!label) {
     return { ok: false, error: 'Missing recording label.' };
   }
 
+  if (stoppingRecording) {
+    await stoppingRecording;
+  }
+
   if (activeRecording) {
-    return { ok: false, error: 'A recording is already active.' };
+    const stopResult = await stopActiveRecording({ discardEmpty: true, analyzeInBackground: true });
+    if (!stopResult.ok) {
+      return { ok: false, error: stopResult.error || 'Could not stop the previous recording.' };
+    }
   }
 
   const child = spawn(desktopDriverPath(), ['record'], {
@@ -277,6 +377,7 @@ ipcMain.handle('recording:start', async (_event, request) => {
   const recording = {
     child,
     label,
+    taskId,
     trajectory: [],
     metadata: null,
     startedAt: new Date().toISOString(),
@@ -301,7 +402,7 @@ ipcMain.handle('recording:start', async (_event, request) => {
         const event = JSON.parse(line);
         if (event.kind === 'recording_started') {
           recording.metadata = event;
-          sendRecordingEvent({ type: 'started', label, metadata: event });
+          sendRecordingEvent({ type: 'started', label, taskId, metadata: event });
           continue;
         }
 
@@ -337,7 +438,7 @@ ipcMain.handle('recording:start', async (_event, request) => {
   return { ok: true, label };
 });
 
-ipcMain.handle('recording:stop', async () => stopActiveRecording());
+ipcMain.handle('recording:stop', async () => stopActiveRecording({ analyzeInBackground: true }));
 
 ipcMain.handle('recording:list', async () => ({ ok: true, recordings: completedRecordings.map(compactDatapoint) }));
 
@@ -362,25 +463,24 @@ ipcMain.handle('computer:run', async (_event, request) => {
     return { ok: false, error: 'A run is already active.' };
   }
 
-  const config = configFromEnvironment();
+  const enabledSkills = enabledSkillsForPrompt();
+  const route = routeForEnabledSkills(enabledSkills);
+  const config = route.config;
   const controller = new AbortController();
   activeRun = controller;
 
   const options = {
     goal,
     model: String(request?.model || config.model).trim(),
-    criticModel: String(request?.criticModel || config.criticModel || request?.model || config.model).trim(),
     maxTurns: Math.max(1, Math.min(20, Number(request?.maxTurns || config.maxTurns || 8))),
-    maxTokens: Math.max(256, Math.min(4096, Number(request?.maxTokens || 900))),
-    temperature: Math.max(0, Math.min(2, Number(request?.temperature || 0.2))),
     signal: controller.signal,
-    enabledSkills: enabledSkillsForPrompt(),
+    enabledSkills,
     emit: sendEvent
   };
 
-  sendEvent({ type: 'start', model: options.model, criticModel: options.criticModel, baseUrl: config.baseUrl });
+  sendEvent({ type: 'start', model: options.model, provider: route.provider, baseUrl: config.baseUrl });
 
-  runComputerUse(options)
+  route.backend.runComputerUse(options)
     .catch((error) => {
       sendEvent({ type: 'error', text: error.message });
     })

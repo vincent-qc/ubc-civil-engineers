@@ -264,12 +264,11 @@ static CGEventRef RecordEventCallback(CGEventTapProxy proxy, CGEventType type, C
     case kCGEventLeftMouseDown:
     case kCGEventRightMouseDown:
     case kCGEventOtherMouseDown:
-      PrintMouseRecord(@"mouse_down", event);
       break;
     case kCGEventLeftMouseUp:
     case kCGEventRightMouseUp:
     case kCGEventOtherMouseUp:
-      PrintMouseRecord(@"mouse_up", event);
+      PrintMouseRecord(@"click", event);
       break;
     case kCGEventLeftMouseDragged:
     case kCGEventRightMouseDragged:
@@ -480,13 +479,80 @@ static CGKeyCode KeyCode(NSString *key) {
   return (CGKeyCode)[code unsignedShortValue];
 }
 
-static void PostKey(NSString *key, bool down) {
+static BOOL IsModifierKey(NSString *key) {
+  NSString *lower = [key lowercaseString];
+  return [lower isEqualToString:@"command"] ||
+    [lower isEqualToString:@"cmd"] ||
+    [lower isEqualToString:@"control"] ||
+    [lower isEqualToString:@"ctrl"] ||
+    [lower isEqualToString:@"option"] ||
+    [lower isEqualToString:@"alt"] ||
+    [lower isEqualToString:@"shift"] ||
+    [lower isEqualToString:@"rightshift"] ||
+    [lower isEqualToString:@"rightoption"] ||
+    [lower isEqualToString:@"rightalt"] ||
+    [lower isEqualToString:@"rightcontrol"] ||
+    [lower isEqualToString:@"rightctrl"] ||
+    [lower isEqualToString:@"function"];
+}
+
+static CGEventFlags ModifierFlag(NSString *key) {
+  NSString *lower = [key lowercaseString];
+  if ([lower isEqualToString:@"command"] || [lower isEqualToString:@"cmd"]) {
+    return kCGEventFlagMaskCommand;
+  }
+  if ([lower isEqualToString:@"control"] || [lower isEqualToString:@"ctrl"] ||
+      [lower isEqualToString:@"rightcontrol"] || [lower isEqualToString:@"rightctrl"]) {
+    return kCGEventFlagMaskControl;
+  }
+  if ([lower isEqualToString:@"option"] || [lower isEqualToString:@"alt"] ||
+      [lower isEqualToString:@"rightoption"] || [lower isEqualToString:@"rightalt"]) {
+    return kCGEventFlagMaskAlternate;
+  }
+  if ([lower isEqualToString:@"shift"] || [lower isEqualToString:@"rightshift"]) {
+    return kCGEventFlagMaskShift;
+  }
+  if ([lower isEqualToString:@"function"]) {
+    return kCGEventFlagMaskSecondaryFn;
+  }
+  return 0;
+}
+
+static CGEventFlags ModifierFlags(NSArray<NSString *> *modifiers) {
+  CGEventFlags flags = 0;
+  for (NSString *modifier in modifiers) {
+    flags |= ModifierFlag(modifier);
+  }
+  return flags;
+}
+
+static void PostKeyWithFlags(NSString *key, bool down, CGEventFlags flags) {
   CGEventRef event = CGEventCreateKeyboardEvent(NULL, KeyCode(key), down);
   if (!event) {
     Fail(@"Unable to create keyboard event.");
   }
+  CGEventSetFlags(event, flags);
   CGEventPost(kCGHIDEventTap, event);
   CFRelease(event);
+}
+
+static void PostKey(NSString *key, bool down) {
+  PostKeyWithFlags(key, down, IsModifierKey(key) ? ModifierFlag(key) : 0);
+}
+
+static void PressKeyWithModifiers(NSString *primary, NSArray<NSString *> *modifiers) {
+  CGEventFlags flags = ModifierFlags(modifiers);
+
+  for (NSString *modifier in modifiers) {
+    PostKey(modifier, true);
+  }
+
+  PostKeyWithFlags(primary, true, flags);
+  PostKeyWithFlags(primary, false, flags);
+
+  for (NSString *modifier in [modifiers reverseObjectEnumerator]) {
+    PostKey(modifier, false);
+  }
 }
 
 static void Keypress(NSArray<NSString *> *args) {
@@ -495,17 +561,21 @@ static void Keypress(NSArray<NSString *> *args) {
   }
 
   NSArray<NSString *> *keys = [args subarrayWithRange:NSMakeRange(1, [args count] - 1)];
-  NSString *primary = [keys lastObject];
-  NSArray<NSString *> *modifiers = [keys subarrayWithRange:NSMakeRange(0, [keys count] - 1)];
+  NSMutableArray<NSString *> *modifiers = [NSMutableArray array];
 
-  for (NSString *modifier in modifiers) {
-    PostKey(modifier, true);
+  for (NSString *key in keys) {
+    if (IsModifierKey(key)) {
+      [modifiers addObject:key];
+      continue;
+    }
+
+    PressKeyWithModifiers(key, modifiers);
+    [modifiers removeAllObjects];
+    usleep(12000);
   }
 
-  PostKey(primary, true);
-  PostKey(primary, false);
-
   for (NSString *modifier in [modifiers reverseObjectEnumerator]) {
+    PostKey(modifier, true);
     PostKey(modifier, false);
   }
 }

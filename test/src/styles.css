@@ -310,47 +310,29 @@ button:disabled {
   gap: 16px;
 }
 
-.skill-chat-interface,
+.skill-prompt-interface,
 .trajectory-interface {
   border: 1px solid #d7d9ce;
   border-radius: 8px;
   background: #fffffb;
 }
 
-.skill-chat-interface {
+.skill-prompt-interface {
   display: grid;
-  grid-template-columns: 280px minmax(320px, 1fr);
+  place-items: center;
   min-height: 480px;
-  overflow: hidden;
-}
-
-.skill-prompt {
-  display: grid;
-  align-content: center;
-  border-right: 1px solid #e5e8df;
   padding: 24px;
-  background: #f2f4ee;
 }
 
-.skill-chat {
+.skill-prompt-form {
   display: grid;
-  grid-template-rows: 1fr auto auto;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
+  width: min(100%, 640px);
 }
 
-.skill-chat-thread {
-  min-height: 260px;
-}
-
-.assistant-bubble {
-  display: inline-block;
-  max-width: 420px;
-  border: 1px solid #dce0d4;
-  border-radius: 8px;
-  padding: 10px 12px;
-  color: #3f463d;
-  background: #f7f8f3;
+.skill-prompt-form h2 {
+  font-size: 26px;
+  line-height: 1.2;
 }
 
 .trajectory-interface {

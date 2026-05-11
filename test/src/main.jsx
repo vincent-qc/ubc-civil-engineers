@@ -1,9 +1,10 @@
-import React, { Component, useEffect, useRef, useState } from 'react';
+import * as React from 'react';
+import { Component, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const computerUse = window.computerUse || {
-  config: async () => ({ model: 'GPT 5.4', criticModel: 'GPT 5.4', maxTurns: 8, hasApiKey: false, baseUrl: '' }),
+  config: async () => ({ provider: 'openai', model: 'gpt-5.5', maxTurns: 8, hasApiKey: false, baseUrl: '' }),
   run: async () => ({ ok: false, error: 'Electron preload API is unavailable.' }),
   stop: async () => ({ ok: false }),
   suggestTrajectories: async () => ({ ok: false, error: 'Electron preload API is unavailable.' }),
@@ -61,25 +62,120 @@ function NavLink({ href, children }) {
   return <a href={href}>{children}</a>;
 }
 
+function normalizeActionKeys(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return [];
+  }
+  return [value];
+}
+
+function conciseText(value) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= 80) {
+    return text;
+  }
+  return `${text.slice(0, 77)}...`;
+}
+
+function typedTextFromKeypress(action) {
+  const keys = normalizeActionKeys(action.keys ?? action.key ?? action.text);
+  if (keys.length === 0) {
+    return '';
+  }
+
+  const characters = keys.map((key) => {
+    const value = String(key);
+    if (value.toLowerCase() === 'space') {
+      return ' ';
+    }
+    return value.length === 1 ? value : null;
+  });
+
+  return characters.every((character) => character !== null) ? characters.join('') : '';
+}
+
+function formatAction(action = {}) {
+  const type = String(action.type || '').toLowerCase();
+
+  if (type === 'click') {
+    return 'click';
+  }
+  if (type === 'double_click') {
+    return 'double click';
+  }
+  if (type === 'type') {
+    return `typed: ${conciseText(action.text)}`;
+  }
+  if (type === 'keypress') {
+    const typedText = typedTextFromKeypress(action);
+    if (typedText) {
+      return `typed: ${conciseText(typedText)}`;
+    }
+    const keys = normalizeActionKeys(action.keys ?? action.key ?? action.text).map(String);
+    return keys.length ? `keypress: ${keys.join(' + ')}` : 'keypress';
+  }
+  if (type === 'scroll') {
+    return 'scroll';
+  }
+  if (type === 'drag') {
+    return 'drag';
+  }
+  if (type === 'move') {
+    return 'move';
+  }
+  if (type === 'wait') {
+    return 'wait';
+  }
+  if (type === 'screenshot') {
+    return 'cua event';
+  }
+
+  return type || 'action';
+}
+
+function formatActivityEvent(event) {
+  if (event.type === 'start') {
+    return 'start';
+  }
+  if (event.type === 'screenshot') {
+    return 'cua event';
+  }
+  if (event.type === 'action') {
+    return formatAction(event.action);
+  }
+  if (event.type === 'error') {
+    return `error: ${event.text}`;
+  }
+  if (event.type === 'done') {
+    return 'done';
+  }
+
+  return null;
+}
+
 function RunPage() {
-  const [config, setConfig] = useState({ model: 'GPT 5.4', criticModel: 'GPT 5.4', maxTurns: 8, hasApiKey: false, baseUrl: '' });
+  const [config, setConfig] = useState({ provider: 'openai', model: 'gpt-5.5', maxTurns: 8, hasApiKey: false, baseUrl: '' });
   const [skills, setSkills] = useState([]);
   const [goal, setGoal] = useState('');
-  const [model, setModel] = useState('GPT 5.4');
+  const [model, setModel] = useState('gpt-5.5');
   const [maxTurns, setMaxTurns] = useState(8);
   const [running, setRunning] = useState(false);
   const [events, setEvents] = useState([]);
   const [screenshot, setScreenshot] = useState('');
   const unsubscribeRef = useRef(null);
 
+  async function refreshConfig() {
+    const nextConfig = await computerUse.config();
+    setConfig(nextConfig);
+    setModel(nextConfig.model);
+    setMaxTurns(nextConfig.maxTurns);
+  }
+
   useEffect(() => {
-    computerUse
-      .config()
-      .then((nextConfig) => {
-        setConfig(nextConfig);
-        setModel(nextConfig.model);
-        setMaxTurns(nextConfig.maxTurns);
-      })
+    refreshConfig()
       .catch((error) => {
         setEvents((previous) => [...previous, { type: 'error', text: error.message }]);
       });
@@ -112,6 +208,9 @@ function RunPage() {
     const result = await computerUse.toggleSkill(skill.id);
     if (result.ok) {
       setSkills(result.skills);
+      refreshConfig().catch((error) => {
+        setEvents((previous) => [...previous, { type: 'error', text: error.message }]);
+      });
     }
   }
 
@@ -170,11 +269,6 @@ function RunPage() {
         <div className="brand-row">
           <div>
             <h2>Run</h2>
-            <p>
-              {config.hasApiKey
-                ? `Configured for ${config.baseUrl}. Enabled skills are added as in-context examples.`
-                : 'Set CLOD_API_KEY before starting the app.'}
-            </p>
           </div>
           <div className={`state-pill ${running ? 'running' : ''}`}>{running ? 'Running' : 'Idle'}</div>
         </div>
@@ -234,27 +328,8 @@ function RunPage() {
         <h2>Activity</h2>
         <pre>
           {events
-            .map((event) => {
-              if (event.type === 'screenshot') {
-                return `screenshot: ${event.width}x${event.height}`;
-              }
-              if (event.type === 'action') {
-                return `action: ${JSON.stringify(event.action)}`;
-              }
-              if (event.type === 'critic') {
-                return `critic: ${event.verdict}`;
-              }
-              if (event.type === 'assistant') {
-                return `assistant: ${event.text}`;
-              }
-              if (event.type === 'error') {
-                return `error: ${event.text}`;
-              }
-              if (event.type === 'done') {
-                return `done: ${event.answer}`;
-              }
-              return `${event.type}${event.turn ? ` ${event.turn}` : ''}`;
-            })
+            .map(formatActivityEvent)
+            .filter(Boolean)
             .join('\n')}
         </pre>
       </div>
@@ -263,28 +338,46 @@ function RunPage() {
 }
 
 function SettingsPage() {
+  const [config, setConfig] = useState({ provider: 'openai', model: 'gpt-5.5', maxTurns: 8, baseUrl: 'https://api.openai.com/v1' });
+
+  useEffect(() => {
+    computerUse.config().then(setConfig).catch(() => {});
+  }, []);
+
+  const usesClod = config.provider === 'clod';
+  const apiKeyName = usesClod ? 'CLOD_API_KEY' : 'OPENAI_API_KEY';
+  const baseUrlName = usesClod ? 'CLOD_BASE_URL' : 'OPENAI_BASE_URL';
+  const modelName = usesClod ? 'CLOD_MODEL' : 'CUA_MODEL';
+  const turnLimitName = usesClod ? 'CLOD_MAX_TURNS' : 'CUA_MAX_TURNS';
+
   return (
     <section className="settings-page">
       <div className="settings-list">
         <div>
           <span>API key</span>
-          <code>CLOD_API_KEY</code>
+          <code>{apiKeyName}</code>
         </div>
         <div>
           <span>Base URL</span>
-          <code>CLOD_BASE_URL=https://api.clod.io/v1</code>
+          <code>
+            {baseUrlName}={config.baseUrl}
+          </code>
+        </div>
+        <div>
+          <span>Active route</span>
+          <code>{usesClod ? '0 enabled skills -> clod' : '1+ enabled skills -> openai'}</code>
         </div>
         <div>
           <span>Model</span>
-          <code>CLOD_MODEL=&quot;GPT 5.4&quot;</code>
-        </div>
-        <div>
-          <span>Critic model</span>
-          <code>CLOD_CRITIC_MODEL=&quot;GPT 5.4&quot;</code>
+          <code>
+            {modelName}={config.model}
+          </code>
         </div>
         <div>
           <span>Turn limit</span>
-          <code>CLOD_MAX_TURNS=8</code>
+          <code>
+            {turnLimitName}={config.maxTurns}
+          </code>
         </div>
       </div>
 
@@ -303,66 +396,162 @@ function AddSkillPage() {
   const [message, setMessage] = useState('');
   const [submittedMessage, setSubmittedMessage] = useState('');
   const [trajectoryTasks, setTrajectoryTasks] = useState([]);
-  const [activeTaskIndex] = useState(0);
+  const [activeTaskIndex, setActiveTaskIndex] = useState(0);
   const [loadingTrajectories, setLoadingTrajectories] = useState(false);
   const [trajectoryError, setTrajectoryError] = useState('');
-  const [recording, setRecording] = useState(false);
-  const [recordingCount, setRecordingCount] = useState(0);
-  const [recordingError, setRecordingError] = useState('');
-  const [trajectoryDatapoints, setTrajectoryDatapoints] = useState([]);
-  const [analysisStatus, setAnalysisStatus] = useState('');
-  const [analysisError, setAnalysisError] = useState('');
+  const [activeRecordingTaskId, setActiveRecordingTaskId] = useState(null);
+  const activeRecordingTaskIdRef = useRef(null);
+  const returnedToMainRef = useRef(false);
+
+  function setActiveRecordingTask(taskId) {
+    activeRecordingTaskIdRef.current = taskId;
+    setActiveRecordingTaskId(taskId);
+  }
+
+  function taskWithState(task, index) {
+    return {
+      ...task,
+      id: task.id || `trajectory-${Date.now()}-${index}`,
+      status: 'ready',
+      recordingCount: 0,
+      datapoint: null,
+      reportStatus: 'idle',
+      analysisStatus: '',
+      analysisError: '',
+      recordingError: ''
+    };
+  }
+
+  function updateTaskAt(index, updater) {
+    if (index === null || index === undefined || index < 0) {
+      return;
+    }
+
+    setTrajectoryTasks((previous) =>
+      previous.map((task, taskIndex) => (taskIndex === index ? updater(task) : task))
+    );
+  }
+
+  function updateTaskById(taskId, updater) {
+    if (!taskId) {
+      return;
+    }
+
+    setTrajectoryTasks((previous) =>
+      previous.map((task) => (task.id === taskId ? updater(task) : task))
+    );
+  }
+
+  function nextReadyTaskIndex(tasks, currentIndex) {
+    for (let index = currentIndex + 1; index < tasks.length; index += 1) {
+      if (tasks[index].status === 'ready') {
+        return index;
+      }
+    }
+    return currentIndex;
+  }
 
   useEffect(() => {
     return computerUse.onRecordingEvent((event) => {
+      const taskId = event.taskId || activeRecordingTaskIdRef.current;
       if (event.type === 'started') {
-        setRecording(true);
-        setRecordingCount(0);
-        setRecordingError('');
-        setAnalysisStatus('');
-        setAnalysisError('');
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          status: task.status === 'stopping' || task.status === 'completed' ? task.status : 'recording',
+          recordingCount: 0,
+          recordingError: '',
+          analysisStatus: '',
+          analysisError: ''
+        }));
       }
       if (event.type === 'sample') {
-        setRecordingCount(event.count);
+        updateTaskById(taskId, (task) => ({ ...task, recordingCount: event.count }));
       }
       if (event.type === 'stopped') {
-        setRecording(false);
-        setRecordingCount(event.datapoint.trajectory.length);
-        setTrajectoryDatapoints((previous) => [...previous, event.datapoint]);
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          status: 'completed',
+          recordingCount: event.datapoint.trajectory.length,
+          datapoint: event.datapoint,
+          reportStatus: 'pending',
+          analysisStatus: 'Waiting for GPT CUA report'
+        }));
+        if (activeRecordingTaskIdRef.current === taskId) {
+          setActiveRecordingTask(null);
+        }
       }
       if (event.type === 'analyzing') {
-        setAnalysisStatus('Analyzing trajectory with CLOD');
-        setAnalysisError('');
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          reportStatus: 'pending',
+          analysisStatus: 'Analyzing trajectory with GPT CUA',
+          analysisError: ''
+        }));
       }
       if (event.type === 'analyzed') {
-        setAnalysisStatus('CUA in-context material ready');
-        setTrajectoryDatapoints((previous) => {
-          const next = [...previous];
-          const lastIndex = next.length - 1;
-          if (lastIndex >= 0) {
-            next[lastIndex] = event.datapoint;
-          } else {
-            next.push(event.datapoint);
-          }
-          return next;
-        });
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          datapoint: event.datapoint,
+          reportStatus: 'done',
+          analysisStatus: 'CUA in-context material ready'
+        }));
       }
       if (event.type === 'skill_saved') {
-        setAnalysisStatus('Skill saved. Returning to chat.');
-        window.setTimeout(() => {
-          window.location.hash = '#/';
-        }, 800);
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          reportStatus: task.reportStatus === 'done' ? 'done' : task.reportStatus,
+          analysisStatus: 'Skill saved. Review the raw data and GPT CUA summary below.'
+        }));
+      }
+      if (event.type === 'discarded') {
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          status: 'ready',
+          recordingCount: 0,
+          analysisStatus: event.reason || 'Previous recording discarded.'
+        }));
+        if (activeRecordingTaskIdRef.current === taskId) {
+          setActiveRecordingTask(null);
+        }
       }
       if (event.type === 'analysis_error') {
-        setAnalysisStatus('');
-        setAnalysisError(event.text);
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          datapoint: event.datapoint || task.datapoint,
+          reportStatus: 'error',
+          analysisStatus: '',
+          analysisError: event.text
+        }));
       }
       if (event.type === 'error') {
-        setRecordingError(event.text);
-        setRecording(false);
+        updateTaskById(taskId, (task) => ({
+          ...task,
+          status: 'ready',
+          recordingError: event.text
+        }));
+        if (activeRecordingTaskIdRef.current === taskId) {
+          setActiveRecordingTask(null);
+        }
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (returnedToMainRef.current || !submittedMessage || trajectoryTasks.length === 0) {
+      return;
+    }
+
+    const allRecordingsComplete = trajectoryTasks.every((task) => task.status === 'completed');
+    const allReportsFinished = trajectoryTasks.every((task) => task.reportStatus === 'done' || task.reportStatus === 'error');
+    if (!allRecordingsComplete || !allReportsFinished) {
+      return;
+    }
+
+    returnedToMainRef.current = true;
+    window.setTimeout(() => {
+      window.location.hash = '#/';
+    }, 800);
+  }, [submittedMessage, trajectoryTasks]);
 
   async function submitMessage(event) {
     event.preventDefault();
@@ -373,55 +562,95 @@ function AddSkillPage() {
     }
 
     setSubmittedMessage(trimmedMessage);
+    returnedToMainRef.current = false;
     setTrajectoryTasks([]);
+    setActiveTaskIndex(0);
     setTrajectoryError('');
-    setRecordingError('');
-    setRecordingCount(0);
-    setTrajectoryDatapoints([]);
-    setAnalysisStatus('');
-    setAnalysisError('');
+    setActiveRecordingTask(null);
     setLoadingTrajectories(true);
 
     const result = await computerUse.suggestTrajectories({ skillPrompt: trimmedMessage });
     if (result.ok) {
-      setTrajectoryTasks(result.tasks);
+      setTrajectoryTasks(result.tasks.map(taskWithState));
     } else {
       setTrajectoryError(result.error || 'Could not generate trajectory tasks.');
     }
     setLoadingTrajectories(false);
   }
 
-  async function startRecording(activeTask) {
-    if (!activeTask || recording) {
+  async function startRecording(taskIndex) {
+    const activeTask = trajectoryTasks[taskIndex];
+    if (
+      !activeTask ||
+      activeRecordingTaskId === activeTask.id ||
+      activeTask.status === 'completed'
+    ) {
       return;
     }
 
-    setRecordingError('');
-    setAnalysisStatus('');
-    setAnalysisError('');
-    setRecordingCount(0);
-    const result = await computerUse.startRecording({ label: activeTask.instruction });
+    setActiveRecordingTask(activeTask.id);
+    updateTaskAt(taskIndex, (task) => ({
+      ...task,
+      status: 'starting',
+      recordingError: '',
+      analysisStatus: '',
+      analysisError: '',
+      recordingCount: 0
+    }));
+    const result = await computerUse.startRecording({ label: activeTask.instruction, taskId: activeTask.id });
     if (!result.ok) {
-      setRecordingError(result.error || 'Could not start recording.');
-      setRecording(false);
+      updateTaskAt(taskIndex, (task) => ({
+        ...task,
+        status: 'ready',
+        recordingError: result.error || 'Could not start recording.'
+      }));
+      if (activeRecordingTaskIdRef.current === activeTask.id) {
+        setActiveRecordingTask(null);
+      }
+      return;
     }
+
+    updateTaskAt(taskIndex, (task) => ({
+      ...task,
+      status: 'recording',
+      recordingError: '',
+      analysisStatus: '',
+      analysisError: ''
+    }));
   }
 
   async function endRecording() {
-    if (!recording) {
+    const taskId = activeRecordingTaskIdRef.current;
+    const taskIndex = taskId ? trajectoryTasks.findIndex((task) => task.id === taskId) : activeTaskIndex;
+    const activeTask = trajectoryTasks[taskIndex];
+    if (activeTask?.status !== 'recording') {
       return;
     }
 
+    updateTaskAt(taskIndex, (task) => ({ ...task, status: 'stopping', analysisStatus: 'Stopping recording' }));
+    if (activeRecordingTaskIdRef.current === taskId) {
+      setActiveRecordingTask(null);
+    }
+    setActiveTaskIndex((index) => nextReadyTaskIndex(trajectoryTasks, index));
     const result = await computerUse.stopRecording();
     if (!result.ok) {
-      setRecordingError(result.error || 'Could not stop recording.');
-      setRecording(false);
+      updateTaskAt(taskIndex, (task) => ({
+        ...task,
+        status: 'ready',
+        recordingError: result.error || 'Could not stop recording.'
+      }));
+      return;
     }
   }
 
   if (submittedMessage) {
     const activeTask = trajectoryTasks[activeTaskIndex];
-    const latestDatapoint = trajectoryDatapoints.at(-1);
+    const latestDatapoint = activeTask?.datapoint;
+    const isActiveRecordingTask = activeTask?.id === activeRecordingTaskId;
+    const isStarting = isActiveRecordingTask && activeTask?.status === 'starting';
+    const isRecording = isActiveRecordingTask && activeTask?.status === 'recording';
+    const isStopping = isActiveRecordingTask && activeTask?.status === 'stopping';
+    const isCompleted = activeTask?.status === 'completed';
 
     return (
       <section className="trajectory-interface" aria-label="Trajectory tasks">
@@ -435,7 +664,7 @@ function AddSkillPage() {
             <div className="trajectory-card">
               <span className="trajectory-kicker">Generating</span>
               <h2>Choosing useful trajectories</h2>
-              <p>Asking CLOD for three recording tasks that cover the skill from different angles.</p>
+              <p>Asking GPT CUA for three recording tasks that cover the skill from different angles.</p>
             </div>
           ) : trajectoryError ? (
             <div className="trajectory-card">
@@ -451,25 +680,31 @@ function AddSkillPage() {
               <h2>{activeTask.title}</h2>
               <p className="trajectory-instruction">{activeTask.instruction}</p>
               {activeTask.why ? <p className="trajectory-why">{activeTask.why}</p> : null}
-              <div className={`recording-status ${recording ? 'running' : ''}`}>
-                <span>{recording ? 'Recording' : 'Ready'}</span>
-                <span>{recordingCount} datapoints</span>
+              <div className={`recording-status ${isRecording ? 'running' : ''}`}>
+                <span>
+                  {isRecording ? 'Recording' : isStarting ? 'Starting' : isStopping ? 'Stopping' : isCompleted ? 'Complete' : 'Ready'}
+                </span>
+                <span>{activeTask.recordingCount} datapoints</span>
               </div>
-              {recordingError ? <p className="recording-error">{recordingError}</p> : null}
-              {analysisStatus ? <p className="analysis-status">{analysisStatus}</p> : null}
-              {analysisError ? <p className="recording-error">{analysisError}</p> : null}
+              {activeTask.recordingError ? <p className="recording-error">{activeTask.recordingError}</p> : null}
+              {activeTask.analysisStatus ? <p className="analysis-status">{activeTask.analysisStatus}</p> : null}
+              {activeTask.analysisError ? <p className="recording-error">{activeTask.analysisError}</p> : null}
               <div className="recording-actions">
-                <button type="button" onClick={() => startRecording(activeTask)} disabled={recording}>
+                <button
+                  type="button"
+                  onClick={() => startRecording(activeTaskIndex)}
+                  disabled={isActiveRecordingTask || isCompleted}
+                >
                   start
                 </button>
-                <button type="button" onClick={endRecording} disabled={!recording}>
+                <button type="button" onClick={endRecording} disabled={!isRecording}>
                   end recording
                 </button>
               </div>
               {latestDatapoint?.cuaAnalysis ? (
                 <div className="cua-analysis">
-                  <span className="trajectory-kicker">CUA in-context material</span>
-                  <p>{latestDatapoint.cuaAnalysis.summary}</p>
+                  <span className="trajectory-kicker">GPT CUA summary</span>
+                  <p className="summary-text">{latestDatapoint.cuaAnalysis.summary}</p>
                   {latestDatapoint.cuaAnalysis.useful_locations?.length ? (
                     <div className="location-list">
                       {latestDatapoint.cuaAnalysis.useful_locations.slice(0, 5).map((location, index) => (
@@ -485,7 +720,7 @@ function AddSkillPage() {
               ) : null}
               {latestDatapoint ? (
                 <div className="trajectory-datapoint">
-                  <span className="trajectory-kicker">Stored datapoint</span>
+                  <span className="trajectory-kicker">Raw trajectory data</span>
                   <pre>{JSON.stringify(latestDatapoint, null, 2)}</pre>
                 </div>
               ) : null}
@@ -503,21 +738,14 @@ function AddSkillPage() {
   }
 
   return (
-    <section className="skill-chat-interface" aria-label="Add skill chat">
-      <aside className="skill-prompt">
-        <h2>what would you like me to learn</h2>
-      </aside>
-
-      <form className="skill-chat" onSubmit={submitMessage}>
-        <div className="skill-chat-thread" aria-live="polite">
-          <div className="assistant-bubble">Tell me the skill you want to add.</div>
-        </div>
-
+    <section className="skill-prompt-interface" aria-label="Add skill prompt">
+      <form className="skill-prompt-form" onSubmit={submitMessage}>
+        <h2>What do you want me to learn?</h2>
         <label className="skill-chat-input">
-          <span>Message</span>
+          <span>Prompt</span>
           <textarea
             value={message}
-            rows={5}
+            rows={8}
             placeholder="Describe what you want the app to learn..."
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
@@ -530,7 +758,7 @@ function AddSkillPage() {
 
         <div className="actions">
           <button type="submit" disabled={!message.trim()}>
-            Send
+            Generate tasks
           </button>
         </div>
       </form>
@@ -547,7 +775,7 @@ function App() {
       <header className="topbar">
         <div>
           <h1>Gregory</h1>
-          <p>Electron main process, React renderer, native desktop control.</p>
+          <p>Your self-learning CUA companion.</p>
         </div>
         <nav aria-label="Routes">
           <NavLink href="#/">Run</NavLink>
